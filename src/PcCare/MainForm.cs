@@ -24,6 +24,7 @@ namespace PcCare
         private static readonly Color RedColor = Color.FromArgb(190, 62, 72);
         private static readonly Font NavigationRegularFont = new Font("Segoe UI", 9.5F, FontStyle.Regular);
         private static readonly Font NavigationBoldFont = new Font("Segoe UI", 9.5F, FontStyle.Bold);
+        private const string SensorProviderReleaseUrl = "https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases";
 
         private readonly DiagnosticService _diagnosticService = new DiagnosticService();
         private readonly RecommendationEngine _recommendationEngine = new RecommendationEngine();
@@ -621,6 +622,18 @@ namespace PcCare
                 new Font("Segoe UI Semibold", 10F, FontStyle.Bold), TextColor, false);
             _liveSensorStatusLabel = AddLabel(sensors, GetLiveSensorStatusText(), 18, 39, 800, 130,
                 new Font("Segoe UI", 9F), MutedColor, false);
+            LinkLabel sensorProviderLink = new LinkLabel();
+            sensorProviderLink.Text = "Как включить датчик: запустите LibreHardwareMonitor (официальный GitHub)";
+            sensorProviderLink.LinkArea = new LinkArea(0, sensorProviderLink.Text.Length);
+            sensorProviderLink.Location = new Point(18, 172);
+            sensorProviderLink.Size = new Size(800, 18);
+            sensorProviderLink.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+            sensorProviderLink.Font = new Font("Segoe UI", 8.5F);
+            sensorProviderLink.LinkColor = AccentColor;
+            sensorProviderLink.ActiveLinkColor = AccentColor;
+            sensorProviderLink.VisitedLinkColor = AccentColor;
+            sensorProviderLink.LinkClicked += delegate { OpenReleasePage(SensorProviderReleaseUrl); };
+            sensors.Controls.Add(sensorProviderLink);
             flow.Controls.Add(sensors);
 
             AddSectionHeading(flow, "Графики текущего или последнего теста");
@@ -1376,7 +1389,7 @@ namespace PcCare
                 }
             }
             if (cpuTemperatureCount == 0)
-                lines.Add("Температура CPU: доступные провайдеры не предоставили явно обозначенный CPU-датчик.");
+                lines.Add("CPU-датчик не найден. Если Windows не передаёт температуру, запустите и оставьте открытым совместимый монитор, например LibreHardwareMonitor.");
 
             bool hasSmartTemperature = false;
             if (_snapshot != null)
@@ -1393,7 +1406,7 @@ namespace PcCare
                 }
             }
             if (cpuTemperatureCount == 0 && otherTemperatureCount == 0 && !hasSmartTemperature)
-                lines.Add("Доступные WMI/ACPI/ATA температурные источники не предоставили показаний.");
+                lines.Add("WMI/ACPI/ATA сейчас не передают температуру; отсутствие показаний не означает 0 °C.");
             lines.Add("Обновлено " + _latestSensorSnapshot.CollectedAt.ToString("HH:mm:ss") +
                 "; общая ACPI-зона не подменяет CPU, *SMART — снимок последней диагностики.");
             return String.Join("\r\n", lines.ToArray());
