@@ -20,10 +20,13 @@ namespace PcCare.Tests
             failures += Run("healthy available data => informational result", TestHealthySnapshotHasNoWarning);
             failures += Run("cleanup removes only files older than one day", TestCleanupRemovesOnlyOldFiles);
             failures += Run("cleanup rejects a drive root", TestCleanupRejectsDriveRoot);
+            failures += Run("CPU stress block matches its known checksum", TestCpuStressChecksum);
+            failures += Run("memory stress allocation is capped safely", TestMemoryStressTargetIsCapped);
+            failures += Run("memory stress is disabled when free RAM is too low", TestMemoryStressRequiresHeadroom);
 
             if (failures == 0)
             {
-                Console.WriteLine("All recommendation tests passed.");
+                Console.WriteLine("All tests passed.");
                 return 0;
             }
 
@@ -198,6 +201,32 @@ namespace PcCare.Tests
             {
                 Environment.SetEnvironmentVariable("TEMP", previousTemp);
             }
+        }
+
+        private static void TestCpuStressChecksum()
+        {
+            uint actual = StressTestService.ComputeCpuCheckValue(0xA5C39E17U, 65536);
+            Assert(actual == 0xD8572465U, "CPU workload must match the known verification checksum.");
+        }
+
+        private static void TestMemoryStressTargetIsCapped()
+        {
+            ulong eightGigabytes = 8UL * 1024UL * 1024UL * 1024UL;
+            int target = StressTestService.CalculateMemoryTargetMegabytes(eightGigabytes, 1024);
+            Assert(target == 1024, "The default memory stress allocation must not exceed the 1 GB cap.");
+            int x86Target = StressTestService.CalculateMemoryTargetMegabytes(eightGigabytes, 512);
+            Assert(x86Target == 512, "The 32-bit process allocation must respect its smaller address-space cap.");
+
+            ulong oneGigabyte = 1024UL * 1024UL * 1024UL;
+            target = StressTestService.CalculateMemoryTargetMegabytes(oneGigabyte, 1024);
+            Assert(target == 256, "The test should reserve at most one quarter of currently available RAM.");
+        }
+
+        private static void TestMemoryStressRequiresHeadroom()
+        {
+            ulong lessThan256Megabytes = 255UL * 1024UL * 1024UL;
+            int target = StressTestService.CalculateMemoryTargetMegabytes(lessThan256Megabytes, 1024);
+            Assert(target == 0, "The memory test must not allocate when Windows has less than 256 MB free.");
         }
 
         private static SystemSnapshot NewSnapshot()
