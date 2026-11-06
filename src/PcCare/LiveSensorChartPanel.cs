@@ -198,7 +198,7 @@ namespace PcCare
                         Rectangle noTempBounds = new Rectangle(plotLeft + 6, plotTop + 3,
                             Math.Max(40, plotRight - plotLeft - 12), Math.Max(18, plotBottom - plotTop - 6));
                         TextRenderer.DrawText(graphics,
-                            "Данные о температуре не передаются. Общая ACPI-зона не подменяет температуру CPU.",
+                            "Температурные показания не передаются. Запустите совместимый монитор датчиков (например, LibreHardwareMonitor); PC Care не устанавливает и не запускает его.",
                             axisFont, noTempBounds, MutedColor,
                             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
                     }
