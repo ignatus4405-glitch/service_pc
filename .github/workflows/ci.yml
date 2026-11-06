@@ -1,0 +1,49 @@
+name: Build and test
+
+on:
+  push:
+    branches:
+      - main
+      - "arena/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Install .NET Framework 4.5 reference assemblies
+        shell: pwsh
+        run: nuget install .\build\packages.config -OutputDirectory packages -NonInteractive
+
+      - name: Build solution
+        shell: pwsh
+        run: |
+          $referenceTargets = Join-Path $env:GITHUB_WORKSPACE "packages\Microsoft.NETFramework.ReferenceAssemblies.net45.1.0.3\build\Microsoft.NETFramework.ReferenceAssemblies.net45.targets"
+          if (-not (Test-Path $referenceTargets)) { throw "Reference assemblies targets were not restored: $referenceTargets" }
+          msbuild PcCare.sln /m /p:Configuration=Release "/p:CustomAfterMicrosoftCommonTargets=$referenceTargets" /verbosity:minimal
+
+      - name: Run unit tests
+        shell: pwsh
+        run: .\src\PcCare.Tests\bin\Release\PcCare.Tests.exe
+
+      - name: Upload portable build
+        uses: actions/upload-artifact@v4
+        with:
+          name: PcCare-windows-build
+          path: |
+            src/PcCare/bin/Release/PcCare.exe
+            src/PcCare.Updater/bin/Release/PcCare.Updater.exe
+          if-no-files-found: error
+          retention-days: 14

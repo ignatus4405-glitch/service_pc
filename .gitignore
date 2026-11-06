@@ -1,0 +1,16 @@
+# Visual Studio / MSBuild
+.vs/
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+*.cache
+
+# NuGet and generated portable packages
+packages/
+dist/
+PcCare-*-windows.zip
+
+# Local test/runtime artifacts
+*.log
+*.tmp
