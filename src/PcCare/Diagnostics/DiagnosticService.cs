@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Management;
 using System.Text.RegularExpressions;
@@ -228,6 +229,83 @@ namespace PcCare.Diagnostics
                 snapshot.SmartQuerySucceeded = false;
                 snapshot.SmartError = ex.Message;
             }
+
+            ReadSmartAttributes(snapshot);
+        }
+
+        private static void ReadSmartAttributes(SystemSnapshot snapshot)
+        {
+            Dictionary<string, Dictionary<int, int>> thresholds =
+                new Dictionary<string, Dictionary<int, int>>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
+                    @"root\WMI", "SELECT InstanceName, VendorSpecific FROM MSStorageDriver_FailurePredictThresholds"))
+                using (ManagementObjectCollection results = searcher.Get())
+                {
+                    foreach (ManagementObject row in results)
+                    {
+                        using (row)
+                        {
+                            string instanceName = ReadString(row, "InstanceName");
+                            byte[] data = row["VendorSpecific"] as byte[];
+                            Dictionary<int, int> parsed = SmartAttributeParser.ParseThresholds(data);
+                            if (!String.IsNullOrWhiteSpace(instanceName) && parsed.Count > 0)
+                                thresholds[instanceName] = parsed;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Thresholds are optional and vendor/controller dependent.
+            }
+
+            try
+            {
+                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
+                    @"root\WMI", "SELECT InstanceName, VendorSpecific FROM MSStorageDriver_FailurePredictData"))
+                using (ManagementObjectCollection results = searcher.Get())
+                {
+                    foreach (ManagementObject row in results)
+                    {
+                        using (row)
+                        {
+                            string instanceName = ReadString(row, "InstanceName");
+                            byte[] data = row["VendorSpecific"] as byte[];
+                            if (data == null || data.Length < 14)
+                                continue;
+
+                            SmartDeviceStatus device = FindOrCreateSmartDevice(snapshot, instanceName);
+                            Dictionary<int, int> deviceThresholds = null;
+                            if (!String.IsNullOrWhiteSpace(instanceName))
+                                thresholds.TryGetValue(instanceName, out deviceThresholds);
+                            List<SmartAttribute> attributes = SmartAttributeParser.ParseAttributes(data, deviceThresholds);
+                            device.Attributes.AddRange(attributes);
+                            device.TemperatureCelsius = SmartAttributeParser.ParseAtaTemperature(attributes);
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // The SMART status flag can still be useful when raw attributes are unavailable.
+            }
+        }
+
+        private static SmartDeviceStatus FindOrCreateSmartDevice(SystemSnapshot snapshot, string instanceName)
+        {
+            foreach (SmartDeviceStatus item in snapshot.SmartDevices)
+            {
+                if (String.Equals(item.InstanceName, instanceName, StringComparison.OrdinalIgnoreCase))
+                    return item;
+            }
+
+            SmartDeviceStatus device = new SmartDeviceStatus();
+            device.InstanceName = instanceName;
+            device.PhysicalDriveIndex = ParsePhysicalDriveIndex(instanceName);
+            snapshot.SmartDevices.Add(device);
+            return device;
         }
 
         private static int? ParsePhysicalDriveIndex(string instanceName)
