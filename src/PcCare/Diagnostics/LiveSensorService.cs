@@ -9,7 +9,7 @@ namespace PcCare.Diagnostics
     {
         public LiveSensorSnapshot()
         {
-            ThermalZones = new List<ThermalZoneReading>();
+            TemperatureSensors = new List<TemperatureSensorReading>();
             Notes = new List<string>();
         }
 
@@ -17,19 +17,22 @@ namespace PcCare.Diagnostics
         public int? CpuLoadPercent { get; set; }
         public ulong? TotalMemoryBytes { get; set; }
         public ulong? AvailableMemoryBytes { get; set; }
-        public List<ThermalZoneReading> ThermalZones { get; private set; }
+        public List<TemperatureSensorReading> TemperatureSensors { get; private set; }
         public List<string> Notes { get; private set; }
     }
 
-    public sealed class ThermalZoneReading
+    public sealed class TemperatureSensorReading
     {
         public string Name { get; set; }
+        public string Source { get; set; }
+        public bool IsCpuSensor { get; set; }
         public double TemperatureCelsius { get; set; }
     }
 
     /// <summary>
-    /// Best-effort Windows performance and ACPI readings. ACPI thermal zones are not
-    /// guaranteed to represent the CPU package; unsupported readings remain unknown.
+    /// Best-effort Windows performance and temperature readings. A temperature is shown
+    /// as CPU temperature only when its source is explicitly labelled as CPU; generic
+    /// ACPI zones remain separate because they may represent another part of the system.
     /// </summary>
     public sealed class LiveSensorService
     {
@@ -38,10 +41,13 @@ namespace PcCare.Diagnostics
         public LiveSensorSnapshot Read()
         {
             LiveSensorSnapshot snapshot = new LiveSensorSnapshot();
-            snapshot.CollectedAt = DateTime.Now;
             ReadCpuLoad(snapshot);
             ReadMemory(snapshot);
+            ReadTemperatureProbes(snapshot);
+            ReadHardwareMonitorSensors(snapshot, @"root\LibreHardwareMonitor", "LibreHardwareMonitor");
+            ReadHardwareMonitorSensors(snapshot, @"root\OpenHardwareMonitor", "OpenHardwareMonitor");
             ReadThermalZones(snapshot);
+            snapshot.CollectedAt = DateTime.Now;
             return snapshot;
         }
 
@@ -101,6 +107,87 @@ namespace PcCare.Diagnostics
             }
         }
 
+        private static void ReadTemperatureProbes(LiveSensorSnapshot snapshot)
+        {
+            try
+            {
+                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
+                    "SELECT Name, Description, CurrentReading FROM Win32_TemperatureProbe"))
+                using (ManagementObjectCollection results = GetTimedResults(searcher))
+                {
+                    foreach (ManagementObject row in results)
+                    {
+                        using (row)
+                        {
+                            int? raw = ReadInt32(row, "CurrentReading");
+                            if (!raw.HasValue)
+                                continue;
+
+                            double celsius;
+                            if (!TryConvertDeciKelvinToCelsius(raw.Value, out celsius))
+                                continue;
+
+                            string name = ReadString(row, "Name");
+                            string description = ReadString(row, "Description");
+                            if (String.IsNullOrWhiteSpace(name))
+                                name = String.IsNullOrWhiteSpace(description) ? "Temperature probe" : description;
+                            snapshot.TemperatureSensors.Add(new TemperatureSensorReading
+                            {
+                                Name = name,
+                                Source = "Win32_TemperatureProbe",
+                                IsCpuSensor = IsExplicitCpuSensor(name, description),
+                                TemperatureCelsius = celsius
+                            });
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Many Windows drivers do not expose Win32_TemperatureProbe; keep the reading unknown.
+            }
+        }
+
+        private static void ReadHardwareMonitorSensors(LiveSensorSnapshot snapshot, string namespacePath, string providerName)
+        {
+            try
+            {
+                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
+                    namespacePath, "SELECT * FROM Sensor"))
+                using (ManagementObjectCollection results = GetTimedResults(searcher))
+                {
+                    foreach (ManagementObject row in results)
+                    {
+                        using (row)
+                        {
+                            string sensorType = ReadString(row, "SensorType");
+                            if (!String.Equals(sensorType, "Temperature", StringComparison.OrdinalIgnoreCase))
+                                continue;
+
+                            double? value = ReadDouble(row, "Value");
+                            if (!value.HasValue || value.Value < -10.0 || value.Value > 130.0)
+                                continue;
+
+                            string name = ReadString(row, "Name");
+                            string identifier = ReadString(row, "Identifier");
+                            snapshot.TemperatureSensors.Add(new TemperatureSensorReading
+                            {
+                                Name = !String.IsNullOrWhiteSpace(name) ? name :
+                                    (!String.IsNullOrWhiteSpace(identifier) ? identifier : providerName + " temperature sensor"),
+                                Source = providerName + " WMI",
+                                IsCpuSensor = IsExplicitCpuSensor(name, identifier),
+                                TemperatureCelsius = value.Value
+                            });
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Third-party WMI sensor providers are optional and are never installed or started by PC Care.
+            }
+        }
+
         private static void ReadThermalZones(LiveSensorSnapshot snapshot)
         {
             try
@@ -118,13 +205,16 @@ namespace PcCare.Diagnostics
                             if (!raw.HasValue)
                                 continue;
 
-                            double celsius = raw.Value / 10.0 - 273.15;
-                            if (celsius < -10.0 || celsius > 130.0)
+                            double celsius;
+                            if (!TryConvertDeciKelvinToCelsius(raw.Value, out celsius))
                                 continue;
 
-                            snapshot.ThermalZones.Add(new ThermalZoneReading
+                            string instanceName = ReadString(row, "InstanceName");
+                            snapshot.TemperatureSensors.Add(new TemperatureSensorReading
                             {
-                                Name = ReadString(row, "InstanceName"),
+                                Name = instanceName,
+                                Source = "MSAcpi_ThermalZoneTemperature",
+                                IsCpuSensor = IsExplicitCpuSensor(instanceName, instanceName),
                                 TemperatureCelsius = celsius
                             });
                         }
@@ -135,6 +225,24 @@ namespace PcCare.Diagnostics
             {
                 // ACPI temperature providers are optional; a missing zone is not a sensor error.
             }
+        }
+
+        public static bool TryConvertDeciKelvinToCelsius(double deciKelvin, out double celsius)
+        {
+            celsius = deciKelvin / 10.0 - 273.15;
+            if (Double.IsNaN(celsius) || Double.IsInfinity(celsius) || celsius < -10.0 || celsius > 130.0)
+            {
+                celsius = 0.0;
+                return false;
+            }
+            return true;
+        }
+
+        public static bool IsExplicitCpuSensor(string name, string description)
+        {
+            string label = ((name ?? String.Empty) + " " + (description ?? String.Empty)).ToLowerInvariant();
+            return label.Contains("cpu") || label.Contains("processor") || label.Contains("процессор") ||
+                label.Contains("tctl") || label.Contains("tdie") || label.Contains("cpu package");
         }
 
         private static ManagementObjectCollection GetTimedResults(ManagementObjectSearcher searcher)
@@ -161,6 +269,15 @@ namespace PcCare.Diagnostics
             if (value == null)
                 return null;
             try { return Convert.ToUInt64(value, CultureInfo.InvariantCulture); }
+            catch { return null; }
+        }
+
+        private static double? ReadDouble(ManagementBaseObject row, string propertyName)
+        {
+            object value = row[propertyName];
+            if (value == null)
+                return null;
+            try { return Convert.ToDouble(value, CultureInfo.InvariantCulture); }
             catch { return null; }
         }
 
