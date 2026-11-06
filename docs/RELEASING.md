@@ -10,8 +10,9 @@
 2. Создайте tag вида `vX.Y.Z` (только три числовые части, например `v1.2.0`) на коммите, который должен стать релизом.
 3. Push этого тега запускает `.github/workflows/release.yml`.
 4. Скрипт `scripts/set-version.ps1` устанавливает AssemblyVersion/FileVersion в `X.Y.Z.0` и InformationalVersion в `X.Y.Z` только в runner checkout.
-5. Workflow собирает solution, выполняет тесты и создаёт `PcCare-vX.Y.Z-windows.zip` с `PcCare.exe`, `PcCare.Updater.exe`, README, CHANGELOG и LICENSE в корне.
-6. `softprops/action-gh-release` публикует ZIP и автоматически сгенерированные release notes.
+5. Общий скрипт `scripts/build.ps1` собирает solution с .NET 4.5 reference assemblies; при ошибке он выводит строки MSBuild/C# в GitHub annotations.
+6. Workflow выполняет тесты и создаёт `PcCare-vX.Y.Z-windows.zip` с `PcCare.exe`, `PcCare.Updater.exe`, README, CHANGELOG и LICENSE в корне.
+7. `softprops/action-gh-release` публикует ZIP и автоматически сгенерированные release notes.
 
 Не публикуйте beta/pre-release теги: текущий клиент получает `/releases/latest` и понимает стабильный `vX.Y.Z`. При переименовании ZIP/ассета синхронно измените `FindWindowsPackage` в `UpdateService.cs`, release workflow и тест/документацию.
 

@@ -30,6 +30,7 @@
 - `src/PcCare.Updater/Program.cs` — ожидание завершения основного процесса, замена EXE и перезапуск.
 - `.github/workflows/ci.yml` — Windows build/test на push/PR; `.github/workflows/release.yml` — release при push `v*.*.*`.
 - `scripts/set-version.ps1` — перевод semver-тега в AssemblyVersion/FileVersion/InformationalVersion.
+- `scripts/build.ps1` — общая Windows-сборка solution с reference assemblies из NuGet; при ошибке выводит compiler/MSBuild details в GitHub annotations.
 - `docs/` — дополнительные пояснения; `CHANGELOG.md` фиксирует заметные изменения.
 
 ## Сборка и проверки
@@ -38,8 +39,7 @@
 
 ```powershell
 nuget install .\build\packages.config -OutputDirectory packages -NonInteractive
-$refs = Join-Path $PWD 'packages\Microsoft.NETFramework.ReferenceAssemblies.net45.1.0.3\build\Microsoft.NETFramework.ReferenceAssemblies.net45.targets'
-msbuild PcCare.sln /m /p:Configuration=Release "/p:CustomAfterMicrosoftCommonTargets=$refs" /verbosity:minimal
+./scripts/build.ps1 -Configuration Release
 .\src\PcCare.Tests\bin\Release\PcCare.Tests.exe
 ```
 

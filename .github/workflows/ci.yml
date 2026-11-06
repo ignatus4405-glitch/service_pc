@@ -29,10 +29,7 @@ jobs:
 
       - name: Build solution
         shell: pwsh
-        run: |
-          $referenceTargets = Join-Path $env:GITHUB_WORKSPACE "packages\Microsoft.NETFramework.ReferenceAssemblies.net45.1.0.3\build\Microsoft.NETFramework.ReferenceAssemblies.net45.targets"
-          if (-not (Test-Path $referenceTargets)) { throw "Reference assemblies targets were not restored: $referenceTargets" }
-          msbuild PcCare.sln /m /p:Configuration=Release "/p:CustomAfterMicrosoftCommonTargets=$referenceTargets" /verbosity:minimal
+        run: ./scripts/build.ps1 -Configuration Release
 
       - name: Run unit tests
         shell: pwsh

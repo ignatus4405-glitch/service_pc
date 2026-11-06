@@ -24,8 +24,7 @@ PC Care — настольная утилита на русском языке �
 
 ```powershell
 nuget install .\build\packages.config -OutputDirectory packages -NonInteractive
-$refs = Join-Path $PWD 'packages\Microsoft.NETFramework.ReferenceAssemblies.net45.1.0.3\build\Microsoft.NETFramework.ReferenceAssemblies.net45.targets'
-msbuild PcCare.sln /m /p:Configuration=Release "/p:CustomAfterMicrosoftCommonTargets=$refs" /verbosity:minimal
+./scripts/build.ps1 -Configuration Release
 .\src\PcCare.Tests\bin\Release\PcCare.Tests.exe
 ```
 

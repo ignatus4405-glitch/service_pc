@@ -33,9 +33,7 @@ jobs:
       - name: Build release binaries
         shell: pwsh
         run: |
-          $referenceTargets = Join-Path $env:GITHUB_WORKSPACE "packages\Microsoft.NETFramework.ReferenceAssemblies.net45.1.0.3\build\Microsoft.NETFramework.ReferenceAssemblies.net45.targets"
-          if (-not (Test-Path $referenceTargets)) { throw "Reference assemblies targets were not restored: $referenceTargets" }
-          msbuild PcCare.sln /m /p:Configuration=Release "/p:CustomAfterMicrosoftCommonTargets=$referenceTargets" /verbosity:minimal
+          ./scripts/build.ps1 -Configuration Release
           .\src\PcCare.Tests\bin\Release\PcCare.Tests.exe
 
       - name: Assemble portable ZIP
