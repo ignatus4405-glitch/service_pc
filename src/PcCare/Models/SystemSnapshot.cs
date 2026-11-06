@@ -64,10 +64,32 @@ namespace PcCare.Models
 
     public sealed class SmartDeviceStatus
     {
+        public SmartDeviceStatus()
+        {
+            Attributes = new List<SmartAttribute>();
+        }
+
         public string InstanceName { get; set; }
         public int? PhysicalDriveIndex { get; set; }
         public bool? PredictsFailure { get; set; }
         public uint? ReasonCode { get; set; }
+        public double? TemperatureCelsius { get; set; }
+        public List<SmartAttribute> Attributes { get; private set; }
+    }
+
+    /// <summary>
+    /// ATA SMART attribute as exposed by the Windows provider. Raw values and common names
+    /// are vendor-specific hints and must not be treated as a universal health verdict.
+    /// </summary>
+    public sealed class SmartAttribute
+    {
+        public int Id { get; set; }
+        public string Name { get; set; }
+        public int Current { get; set; }
+        public int Worst { get; set; }
+        public int? Threshold { get; set; }
+        public ulong RawValue { get; set; }
+        public string RawHex { get; set; }
     }
 
     public enum RecommendationSeverity

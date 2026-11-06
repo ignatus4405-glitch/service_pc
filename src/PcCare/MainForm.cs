@@ -29,6 +29,8 @@ namespace PcCare
         private readonly RecommendationEngine _recommendationEngine = new RecommendationEngine();
         private readonly CleanupService _cleanupService = new CleanupService();
         private readonly StressTestService _stressTestService = new StressTestService();
+        private readonly LiveSensorService _liveSensorService = new LiveSensorService();
+        private readonly DiskSurfaceTestService _diskSurfaceTestService = new DiskSurfaceTestService();
         private readonly UpdateService _updateService = new UpdateService();
         private readonly Dictionary<string, Button> _navigationButtons = new Dictionary<string, Button>();
         private readonly List<Button> _scanButtons = new List<Button>();
@@ -48,14 +50,24 @@ namespace PcCare
         private Label _stressStatusLabel;
         private Button _stressStartButton;
         private Button _stressStopButton;
+        private Label _liveSensorStatusLabel;
+        private ComboBox _diskSelector;
+        private Label _diskScanStatusLabel;
+        private Button _diskScanStartButton;
+        private Button _diskScanStopButton;
         private CancellationTokenSource _stressCancellation;
+        private CancellationTokenSource _diskScanCancellation;
         private StressTestResult _lastStressTestResult;
+        private DiskScanResult _lastDiskScanResult;
+        private LiveSensorSnapshot _latestSensorSnapshot;
         private string _stressProgressText = "Нагрузочный тест ещё не запускался.";
+        private string _diskScanProgressText = "Проверка поверхности диска ещё не запускалась.";
         private string _currentPage = "overview";
         private bool _isScanning;
         private bool _isCleaning;
         private bool _isCheckingUpdate;
         private bool _isStressTestRunning;
+        private bool _isDiskScanRunning;
 
         public MainForm()
         {
@@ -82,11 +94,11 @@ namespace PcCare
 
         private void MainForm_FormClosing(object sender, FormClosingEventArgs e)
         {
-            if (!_isStressTestRunning)
+            if (!_isStressTestRunning && !_isDiskScanRunning)
                 return;
 
             DialogResult answer = MessageBox.Show(this,
-                "Нагрузочный тест ещё выполняется. Остановить его и закрыть PC Care?",
+                "Проверка оборудования ещё выполняется. Остановить её и закрыть PC Care?",
                 "Тест компьютера", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
                 MessageBoxDefaultButton.Button2);
             if (answer != DialogResult.Yes)
@@ -97,6 +109,8 @@ namespace PcCare
 
             if (_stressCancellation != null)
                 _stressCancellation.Cancel();
+            if (_diskScanCancellation != null)
+                _diskScanCancellation.Cancel();
         }
 
         private void BuildShell()
@@ -232,6 +246,7 @@ namespace PcCare
             AddNavigationButton(navigation, "Обзор", "overview");
             AddNavigationButton(navigation, "Диагностика", "diagnostics");
             AddNavigationButton(navigation, "Тест стабильности", "stress");
+            AddNavigationButton(navigation, "Диски и SMART", "drives");
             AddNavigationButton(navigation, "Предложения", "recommendations");
             AddNavigationButton(navigation, "Очистка кэша", "cleanup");
             AddNavigationButton(navigation, "Оптимизация", "optimization");
@@ -267,16 +282,20 @@ namespace PcCare
             button.Cursor = Cursors.Hand;
             button.Click += delegate
             {
-                if (_isStressTestRunning && !String.Equals(page, "stress", StringComparison.OrdinalIgnoreCase))
+                bool leavingStressPage = _isStressTestRunning && !String.Equals(page, "stress", StringComparison.OrdinalIgnoreCase);
+                bool leavingDiskScanPage = _isDiskScanRunning && !String.Equals(page, "drives", StringComparison.OrdinalIgnoreCase);
+                if (leavingStressPage || leavingDiskScanPage)
                 {
                     DialogResult stop = MessageBox.Show(this,
-                        "Нагрузочный тест ещё выполняется. Остановить его и перейти в другой раздел?",
+                        "Проверка оборудования ещё выполняется. Остановить её и перейти в другой раздел?",
                         "Тест компьютера", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
                         MessageBoxDefaultButton.Button2);
                     if (stop != DialogResult.Yes)
                         return;
-                    if (_stressCancellation != null)
+                    if (leavingStressPage && _stressCancellation != null)
                         _stressCancellation.Cancel();
+                    if (leavingDiskScanPage && _diskScanCancellation != null)
+                        _diskScanCancellation.Cancel();
                 }
                 ShowPage(page);
             };
@@ -299,6 +318,11 @@ namespace PcCare
             _stressStatusLabel = null;
             _stressStartButton = null;
             _stressStopButton = null;
+            _liveSensorStatusLabel = null;
+            _diskSelector = null;
+            _diskScanStatusLabel = null;
+            _diskScanStartButton = null;
+            _diskScanStopButton = null;
 
             foreach (KeyValuePair<string, Button> entry in _navigationButtons)
             {
@@ -330,6 +354,7 @@ namespace PcCare
             {
                 case "diagnostics": BuildDiagnosticsPage(flow); break;
                 case "stress": BuildStressPage(flow); break;
+                case "drives": BuildDrivesPage(flow); break;
                 case "recommendations": BuildRecommendationsPage(flow); break;
                 case "cleanup": BuildCleanupPage(flow); break;
                 case "optimization": BuildOptimizationPage(flow); break;
@@ -351,6 +376,10 @@ namespace PcCare
                 case "stress":
                     title = "Тест стабильности компьютера";
                     subtitle = "Ручной ограниченный нагрузочный тест процессора и оперативной памяти.";
+                    break;
+                case "drives":
+                    title = "Накопители, SMART и поверхность";
+                    subtitle = "Сводка SMART и ручная последовательная проверка физических дисков только на чтение.";
                     break;
                 case "recommendations":
                     title = "Предложения по оптимизации";
@@ -581,7 +610,15 @@ namespace PcCare
                 "Запускается только вручную. Результат показывает ошибки в ходе теста, но не гарантирует исправность компонентов.");
 
             flow.Controls.Add(CreateInfoCard("Важное предупреждение",
-                "Нагрузочный тест может сильно нагреть процессор и вызвать шум вентиляторов или выключение компьютера. Сохраните работу, подключите ноутбук к питанию и следите за температурой отдельной утилитой: PC Care её не измеряет. Остановите тест при перегреве, зависаниях или необычном шуме. Проверка ОЗУ выделяет не более 25% свободной памяти (до 1 ГБ в 64-разрядном процессе / 512 МБ в 32-разрядном). GPU, видеопамять, блок питания и накопители здесь не тестируются."));
+                "Нагрузочный тест может сильно нагреть процессор и вызвать шум вентиляторов или выключение компьютера. Сохраните работу и подключите ноутбук к питанию. Ниже показываются только датчики, доступные Windows (WMI/ACPI/SMART); показание ACPI не обязательно является температурой кристалла CPU. Остановите тест при перегреве, зависаниях или необычном шуме. Проверка ОЗУ выделяет не более 25% свободной памяти (до 1 ГБ в 64-разрядном процессе / 512 МБ в 32-разрядном). GPU, видеопамять, вентиляторы и блок питания не мониторятся."));
+
+            Panel sensors = CreateCard(200);
+            sensors.Margin = new Padding(0, 0, 0, 12);
+            AddLabel(sensors, "Доступные датчики во время теста", 18, 10, 700, 24,
+                new Font("Segoe UI Semibold", 10F, FontStyle.Bold), TextColor, false);
+            _liveSensorStatusLabel = AddLabel(sensors, GetLiveSensorStatusText(), 18, 39, 800, 152,
+                new Font("Segoe UI", 9F), MutedColor, false);
+            flow.Controls.Add(sensors);
 
             Panel settings = CreateCard(164);
             settings.Margin = new Padding(0, 0, 0, 12);
@@ -620,7 +657,7 @@ namespace PcCare
             actions.Margin = new Padding(0, 0, 0, 10);
             _stressStartButton = CreateButton(_isStressTestRunning ? "Тест выполняется…" : "Начать тест", true);
             _stressStartButton.Size = new Size(190, 44);
-            _stressStartButton.Enabled = !_isStressTestRunning;
+            _stressStartButton.Enabled = !_isStressTestRunning && !_isDiskScanRunning && !_isScanning;
             _stressStartButton.Click += async delegate { await RunStressTestAsync(); };
             actions.Controls.Add(_stressStartButton);
             _stressStopButton = CreateButton("Остановить тест", false);
@@ -643,6 +680,149 @@ namespace PcCare
 
             flow.Controls.Add(CreateInfoCard("Как трактовать результат",
                 "Ноль ошибок означает только, что выбранный короткий тест не обнаружил ошибок в выделенной памяти и вычислениях. Это не полноценная сертификация стабильности, не проверка всей физической ОЗУ и не диагноз температуры, GPU или блока питания."));
+        }
+
+        private void BuildDrivesPage(FlowLayoutPanel flow)
+        {
+            AddPageIntro(flow, "SMART и проверка дисков",
+                "Сведения зависят от контроллера и драйвера. Проверка поверхности выполняет только последовательное чтение физического диска.");
+
+            flow.Controls.Add(CreateInfoCard("Ограничения SMART",
+                "Доступны только данные, которые предоставляет Windows WMI. ATA-атрибуты и их raw-значения зависят от производителя; типовые названия — подсказки, а не универсальная расшифровка. Отсутствие SMART не означает исправность. Температура ATA — приблизительная; NVMe/RAID/USB-мосты могут не передавать атрибуты."));
+
+            Button refresh = CreateButton(_isScanning ? "Обновление данных…" : "Обновить диагностику и SMART", true);
+            refresh.Size = new Size(250, 44);
+            refresh.Enabled = !_isScanning && !_isDiskScanRunning && !_isStressTestRunning;
+            refresh.Click += async delegate { await RunDiagnosticsAsync(); };
+            _scanButtons.Add(refresh);
+            flow.Controls.Add(refresh);
+
+            AddSectionHeading(flow, "Состояние и SMART-атрибуты");
+            List<SmartDeviceStatus> displayedSmartDevices = new List<SmartDeviceStatus>();
+            if (_snapshot == null || _snapshot.PhysicalDisks.Count == 0)
+            {
+                flow.Controls.Add(CreateInfoCard("Физические диски не обнаружены",
+                    "Запустите или повторите диагностику. WMI SMART-данные, которые нельзя связать с номером физического диска, будут показаны отдельно."));
+            }
+            else
+            {
+                foreach (PhysicalDiskInfo disk in _snapshot.PhysicalDisks)
+                {
+                    SmartDeviceStatus smart = FindSmartDeviceForDisk(disk.Index);
+                    if (smart != null && !displayedSmartDevices.Contains(smart))
+                        displayedSmartDevices.Add(smart);
+                    string diskName = String.IsNullOrWhiteSpace(disk.Model) ? "Модель не указана" : disk.Model;
+                    string smartStatus = GetSmartStatusText(smart);
+                    string temperature = smart != null && smart.TemperatureCelsius.HasValue
+                        ? smart.TemperatureCelsius.Value.ToString("N0") + " °C (приблизительно, ATA SMART)"
+                        : "нет данных от доступного SMART-атрибута";
+                    List<string> summary = new List<string>();
+                    summary.Add("Номер физического диска: " + disk.Index + " · " +
+                        (disk.SizeBytes > 0 ? RecommendationEngine.FormatBytes(disk.SizeBytes) : "размер не указан"));
+                    summary.Add("Статус Windows: " + (String.IsNullOrWhiteSpace(disk.Status) ? "не указан" : disk.Status));
+                    summary.Add("SMART: " + smartStatus);
+                    if (smart != null)
+                        summary.Add("Источник SMART WMI: " + (String.IsNullOrWhiteSpace(smart.InstanceName) ? "имя не указано" : smart.InstanceName));
+                    summary.Add("Температура: " + temperature);
+                    flow.Controls.Add(CreateDetailCard("Диск " + disk.Index + " — " + diskName, summary));
+
+                    if (smart != null && smart.Attributes.Count > 0)
+                    {
+                        flow.Controls.Add(CreateDetailCard("SMART-атрибуты диска " + disk.Index +
+                            " (значения производителя)", GetSmartAttributeLines(smart.Attributes)));
+                    }
+                    else if (smart == null && _snapshot.SmartDevices.Count > 0)
+                    {
+                        flow.Controls.Add(CreateInfoCard("SMART для диска " + disk.Index + " не сопоставлен",
+                            "WMI вернул SMART-строки, но их связь с этим номером диска не подтверждена. Непривязанные сведения показаны отдельно; отсутствие строки не означает исправность."));
+                    }
+                    else
+                    {
+                        flow.Controls.Add(CreateInfoCard("Подробные SMART-атрибуты не получены",
+                            "Контроллер или драйвер не передал ATA VendorSpecific данные. Это не является подтверждением исправности диска."));
+                    }
+                }
+            }
+
+            if (_snapshot != null)
+            {
+                foreach (SmartDeviceStatus smart in _snapshot.SmartDevices)
+                {
+                    if (displayedSmartDevices.Contains(smart))
+                        continue;
+
+                    List<string> deviceLines = new List<string>();
+                    deviceLines.Add("WMI instance: " + (String.IsNullOrWhiteSpace(smart.InstanceName) ? "имя не указано" : smart.InstanceName));
+                    deviceLines.Add("Номер физического диска из WMI: " +
+                        (smart.PhysicalDriveIndex.HasValue ? smart.PhysicalDriveIndex.Value.ToString() : "не определён"));
+                    deviceLines.Add("SMART: " + GetSmartStatusText(smart));
+                    deviceLines.Add("Температура: " + (smart.TemperatureCelsius.HasValue
+                        ? smart.TemperatureCelsius.Value.ToString("N0") + " °C (приблизительно, ATA SMART)"
+                        : "нет данных"));
+                    string deviceTitle = smart.PhysicalDriveIndex.HasValue
+                        ? "Дополнительная SMART-строка WMI (индекс " + smart.PhysicalDriveIndex.Value + ")"
+                        : "SMART-устройство без сопоставленного физического диска";
+                    flow.Controls.Add(CreateDetailCard(deviceTitle, deviceLines));
+                    if (smart.Attributes.Count > 0)
+                        flow.Controls.Add(CreateDetailCard("ATA SMART-атрибуты — WMI instance", GetSmartAttributeLines(smart.Attributes)));
+                }
+            }
+
+            AddSectionHeading(flow, "Чтение поверхности диска");
+            flow.Controls.Add(CreateInfoCard("Перед запуском",
+                "Полное последовательное чтение всего физического диска может занять часы и создать длительную нагрузку на накопитель. Проверка не записывает, не исправляет и не переназначает сектора. Время измеряется для блоков 1 МБ: 200–999 мс отмечаются как медленные, от 1 с — как очень медленные; это эвристика, а не диагноз отдельного сектора. Остановка действует между блоками; при повторных попытках самого диска одно чтение может задержаться. Если Windows SMART уже предупреждает об отказе, сначала сохраните данные. Для raw-доступа могут потребоваться права администратора; PC Care не запрашивает UAC автоматически."));
+
+            Panel selectorCard = CreateCard(82);
+            selectorCard.Margin = new Padding(0, 0, 0, 12);
+            AddLabel(selectorCard, "Физический диск для полного сканирования", 18, 9, 700, 22,
+                new Font("Segoe UI Semibold", 9F, FontStyle.Bold), TextColor, false);
+            _diskSelector = new ComboBox();
+            _diskSelector.DropDownStyle = ComboBoxStyle.DropDownList;
+            _diskSelector.Font = new Font("Segoe UI", 9F);
+            _diskSelector.Location = new Point(18, 35);
+            _diskSelector.Size = new Size(Math.Max(260, selectorCard.Width - 40), 27);
+            _diskSelector.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+            if (_snapshot != null)
+            {
+                foreach (PhysicalDiskInfo disk in _snapshot.PhysicalDisks)
+                {
+                    if (disk.Index >= 0 && disk.SizeBytes > 0)
+                        _diskSelector.Items.Add(new DiskChoice(disk));
+                }
+            }
+            if (_diskSelector.Items.Count > 0)
+                _diskSelector.SelectedIndex = 0;
+            _diskSelector.Enabled = !_isDiskScanRunning;
+            selectorCard.Controls.Add(_diskSelector);
+            flow.Controls.Add(selectorCard);
+
+            FlowLayoutPanel actions = new FlowLayoutPanel();
+            actions.AutoSize = true;
+            actions.WrapContents = true;
+            actions.BackColor = PageColor;
+            actions.Margin = new Padding(0, 0, 0, 10);
+            _diskScanStartButton = CreateButton(_isDiskScanRunning ? "Сканирование…" : "Начать чтение диска", true);
+            _diskScanStartButton.Size = new Size(210, 44);
+            _diskScanStartButton.Enabled = !_isDiskScanRunning && !_isStressTestRunning && !_isScanning && _diskSelector.Items.Count > 0;
+            _diskScanStartButton.Click += async delegate { await RunDiskScanAsync(); };
+            actions.Controls.Add(_diskScanStartButton);
+            _diskScanStopButton = CreateButton("Остановить чтение", false);
+            _diskScanStopButton.Size = new Size(180, 44);
+            _diskScanStopButton.Enabled = _isDiskScanRunning;
+            _diskScanStopButton.Click += delegate { StopDiskScan(); };
+            actions.Controls.Add(_diskScanStopButton);
+            flow.Controls.Add(actions);
+
+            Panel status = CreateCard(124);
+            status.Margin = new Padding(0, 0, 0, 12);
+            AddLabel(status, "Ход проверки", 18, 10, 600, 24,
+                new Font("Segoe UI Semibold", 10F, FontStyle.Bold), TextColor, false);
+            _diskScanStatusLabel = AddLabel(status, _diskScanProgressText, 18, 38, 800, 76,
+                new Font("Segoe UI", 9F), MutedColor, false);
+            flow.Controls.Add(status);
+
+            if (_lastDiskScanResult != null)
+                flow.Controls.Add(CreateDetailCard("Итог последней проверки", GetDiskScanResultLines(_lastDiskScanResult)));
         }
 
         private void BuildRecommendationsPage(FlowLayoutPanel flow)
@@ -1021,7 +1201,7 @@ namespace PcCare
 
         private async Task RunStressTestAsync()
         {
-            if (_isStressTestRunning)
+            if (_isStressTestRunning || _isDiskScanRunning || _isScanning)
                 return;
 
             StressModeChoice modeChoice = _stressModeSelector == null
@@ -1034,18 +1214,20 @@ namespace PcCare
             string selectedMode = GetStressModeName(modeChoice.Mode);
             DialogResult answer = MessageBox.Show(this,
                 "Запустить тест «" + selectedMode + "» на " + durationChoice.Minutes + " мин.?\r\n\r\n" +
-                "Тест создаст высокую нагрузку. Сохраните открытые документы, подключите ноутбук к питанию и следите за температурой. " +
-                "PC Care не измеряет температуру и GPU. Тест можно остановить в любой момент.",
+                "Тест создаст высокую нагрузку. Сохраните документы и подключите ноутбук к питанию. Доступные Windows датчики выводятся ниже, но их наличие и связь с температурой CPU не гарантируются; GPU не мониторится. Тест можно остановить в любой момент.",
                 "Подтверждение нагрузочного теста", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
                 MessageBoxDefaultButton.Button2);
             if (answer != DialogResult.Yes)
                 return;
 
             _isStressTestRunning = true;
+            _latestSensorSnapshot = null;
             _stressCancellation = new CancellationTokenSource();
             _stressProgressText = "Подготовка нагрузочного теста…";
             ShowPage("stress");
             CancellationToken cancellationToken = _stressCancellation.Token;
+            CancellationTokenSource sensorCancellation = new CancellationTokenSource();
+            ObserveBackgroundTask(MonitorLiveSensorsAsync(sensorCancellation.Token));
             Progress<StressTestProgress> progress = new Progress<StressTestProgress>(delegate(StressTestProgress update)
             {
                 if (!_isStressTestRunning || IsDisposed || Disposing)
@@ -1072,6 +1254,8 @@ namespace PcCare
             }
             finally
             {
+                sensorCancellation.Cancel();
+                sensorCancellation.Dispose();
                 _isStressTestRunning = false;
                 if (_stressCancellation != null)
                 {
@@ -1091,6 +1275,94 @@ namespace PcCare
             if (_stressStatusLabel != null && !_stressStatusLabel.IsDisposed)
                 _stressStatusLabel.Text = _stressProgressText;
             _stressCancellation.Cancel();
+        }
+
+        private static void ObserveBackgroundTask(Task task)
+        {
+            task.ContinueWith(delegate(Task completed)
+            {
+                if (completed.Exception != null)
+                    Debug.WriteLine(completed.Exception);
+            }, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+        }
+
+        private async Task MonitorLiveSensorsAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                while (!cancellationToken.IsCancellationRequested)
+                {
+                    LiveSensorSnapshot snapshot = await Task.Run(delegate { return _liveSensorService.Read(); });
+                    if (cancellationToken.IsCancellationRequested)
+                        return;
+
+                    _latestSensorSnapshot = snapshot;
+                    if (_liveSensorStatusLabel != null && !_liveSensorStatusLabel.IsDisposed &&
+                        String.Equals(_currentPage, "stress", StringComparison.OrdinalIgnoreCase))
+                        _liveSensorStatusLabel.Text = GetLiveSensorStatusText();
+
+                    await Task.Delay(2000, cancellationToken);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // User stopped the stress test; stop sensor polling as well.
+            }
+            catch (Exception ex)
+            {
+                if (_liveSensorStatusLabel != null && !_liveSensorStatusLabel.IsDisposed)
+                    _liveSensorStatusLabel.Text = "Не удалось обновить датчики: " + ex.Message;
+            }
+        }
+
+        private string GetLiveSensorStatusText()
+        {
+            if (_latestSensorSnapshot == null)
+                return _isStressTestRunning
+                    ? "Запрашиваем доступные датчики Windows…"
+                    : "Датчики будут опрашиваться во время нагрузочного теста.";
+
+            List<string> lines = new List<string>();
+            lines.Add("CPU (WMI PerfOS): " + (_latestSensorSnapshot.CpuLoadPercent.HasValue
+                ? _latestSensorSnapshot.CpuLoadPercent.Value + "% загрузки" : "загрузка недоступна"));
+            if (_latestSensorSnapshot.TotalMemoryBytes.HasValue && _latestSensorSnapshot.AvailableMemoryBytes.HasValue)
+                lines.Add("ОЗУ (WMI Windows), свободно: " + RecommendationEngine.FormatBytes(_latestSensorSnapshot.AvailableMemoryBytes.Value) +
+                    " из " + RecommendationEngine.FormatBytes(_latestSensorSnapshot.TotalMemoryBytes.Value));
+            else
+                lines.Add("ОЗУ (WMI Windows): данные недоступны");
+
+            int displayedZones = Math.Min(2, _latestSensorSnapshot.ThermalZones.Count);
+            for (int i = 0; i < displayedZones; i++)
+            {
+                ThermalZoneReading zone = _latestSensorSnapshot.ThermalZones[i];
+                lines.Add("ACPI/WMI zone " + (String.IsNullOrWhiteSpace(zone.Name) ? "thermal zone" : zone.Name) + ": " +
+                    zone.TemperatureCelsius.ToString("N1") + " °C (не обязательно температура CPU)");
+            }
+
+            int smartTemperatures = 0;
+            int displayedSmartTemperatures = 0;
+            if (_snapshot != null)
+            {
+                foreach (SmartDeviceStatus device in _snapshot.SmartDevices)
+                {
+                    if (!device.TemperatureCelsius.HasValue)
+                        continue;
+                    smartTemperatures++;
+                    if (displayedSmartTemperatures >= 2)
+                        continue;
+                    string name = device.PhysicalDriveIndex.HasValue
+                        ? "Диск " + device.PhysicalDriveIndex.Value : "Накопитель";
+                    lines.Add(name + " (ATA SMART): " + device.TemperatureCelsius.Value.ToString("N0") + " °C*");
+                    displayedSmartTemperatures++;
+                }
+            }
+            if (smartTemperatures > displayedSmartTemperatures)
+                lines.Add("Ещё накопителей с ATA SMART температурой: " + (smartTemperatures - displayedSmartTemperatures));
+            if (displayedZones == 0 && smartTemperatures == 0)
+                lines.Add("Температура: ACPI/ATA датчики не предоставили данных.");
+            lines.Add("Обновлено " + _latestSensorSnapshot.CollectedAt.ToString("HH:mm:ss") +
+                "; ACPI может не отражать CPU, *SMART — снимок последней диагностики.");
+            return String.Join("\r\n", lines.ToArray());
         }
 
         private static string GetStressProgressText(StressTestProgress progress)
@@ -1152,6 +1424,159 @@ namespace PcCare
         private static string FormatStressElapsed(TimeSpan elapsed)
         {
             return String.Format("{0:00}:{1:00}", (int)elapsed.TotalMinutes, elapsed.Seconds);
+        }
+
+        private async Task RunDiskScanAsync()
+        {
+            if (_isDiskScanRunning || _isStressTestRunning || _isScanning || _diskSelector == null)
+                return;
+
+            DiskChoice choice = _diskSelector.SelectedItem as DiskChoice;
+            if (choice == null || choice.Disk == null)
+                return;
+
+            SmartDeviceStatus smart = FindSmartDeviceForDisk(choice.Disk.Index);
+            string warning = smart != null && smart.PredictsFailure == true
+                ? "\r\n\r\nВНИМАНИЕ: Windows SMART уже сообщает о возможном отказе. Сначала сделайте резервную копию; безопаснее не нагружать такой диск."
+                : String.Empty;
+            DialogResult answer = MessageBox.Show(this,
+                "Полностью прочитать физический диск " + choice.Disk.Index + " — " + choice.Disk.Model + " (" +
+                RecommendationEngine.FormatBytes(choice.Disk.SizeBytes) + ")?\r\n\r\n" +
+                "Тест не записывает, не исправляет и не переназначает сектора. Чтение может занять много времени; отмена применяется после текущего блока." +
+                warning + "\r\n\r\nПродолжить?",
+                "Подтверждение проверки диска", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);
+            if (answer != DialogResult.Yes)
+                return;
+
+            _isDiskScanRunning = true;
+            _lastDiskScanResult = null;
+            _diskScanCancellation = new CancellationTokenSource();
+            _diskScanProgressText = "Открываем физический диск только для чтения…";
+            ShowPage("drives");
+            CancellationToken cancellationToken = _diskScanCancellation.Token;
+            Progress<DiskScanProgress> progress = new Progress<DiskScanProgress>(delegate(DiskScanProgress update)
+            {
+                if (!_isDiskScanRunning || IsDisposed || Disposing)
+                    return;
+                _diskScanProgressText = GetDiskScanProgressText(update);
+                if (_diskScanStatusLabel != null && !_diskScanStatusLabel.IsDisposed)
+                    _diskScanStatusLabel.Text = _diskScanProgressText;
+            });
+
+            try
+            {
+                _lastDiskScanResult = await _diskSurfaceTestService.RunAsync(
+                    choice.Disk.Index, progress, cancellationToken);
+                _diskScanProgressText = GetDiskScanSummary(_lastDiskScanResult);
+            }
+            catch (Exception ex)
+            {
+                _diskScanProgressText = "Не удалось выполнить чтение диска: " + ex.Message;
+            }
+            finally
+            {
+                _isDiskScanRunning = false;
+                if (_diskScanCancellation != null)
+                {
+                    _diskScanCancellation.Dispose();
+                    _diskScanCancellation = null;
+                }
+                if (!IsDisposed && !Disposing)
+                    ShowPage(_currentPage);
+            }
+        }
+
+        private void StopDiskScan()
+        {
+            if (_diskScanCancellation == null || !_isDiskScanRunning)
+                return;
+            _diskScanProgressText = "Остановка… ожидается завершение текущего чтения.";
+            if (_diskScanStatusLabel != null && !_diskScanStatusLabel.IsDisposed)
+                _diskScanStatusLabel.Text = _diskScanProgressText;
+            _diskScanCancellation.Cancel();
+        }
+
+        private static string GetDiskScanProgressText(DiskScanProgress progress)
+        {
+            List<string> lines = new List<string>();
+            lines.Add("Полное чтение: " + progress.PercentComplete.ToString("N1") + "% · обработано " +
+                RecommendationEngine.FormatBytes((ulong)Math.Max(0L, progress.BytesProcessed)) + " из " +
+                RecommendationEngine.FormatBytes((ulong)Math.Max(0L, progress.TotalBytes)));
+            lines.Add("Блоков: " + progress.BlocksProcessed + " · ошибок чтения: " + progress.ErrorBlocks +
+                " · медленных (200–999 мс): " + progress.SlowBlocks + " · очень медленных (≥1 с): " + progress.VerySlowBlocks);
+            lines.Add("Последний блок: " + progress.LastBlockMilliseconds.ToString("N1") + " мс · максимум: " +
+                progress.MaximumBlockMilliseconds.ToString("N1") + " мс");
+            return String.Join("\r\n", lines.ToArray());
+        }
+
+        private static string GetDiskScanSummary(DiskScanResult result)
+        {
+            if (!String.IsNullOrWhiteSpace(result.ErrorMessage))
+                return "Не удалось полностью прочитать диск: " + result.ErrorMessage;
+            if (result.Cancelled)
+                return "Чтение остановлено пользователем после обработки " +
+                    RecommendationEngine.FormatBytes((ulong)Math.Max(0L, result.BytesProcessed)) + ".";
+            if (result.ErrorBlocks > 0)
+                return "Сканирование завершено с ошибками чтения. Сохраните данные и проверьте диск/кабель/контроллер.";
+            return result.Completed
+                ? "Полное последовательное чтение завершено; ошибок чтения не обнаружено. Это не гарантия исправности накопителя."
+                : "Сканирование не завершено.";
+        }
+
+        private static IList<string> GetDiskScanResultLines(DiskScanResult result)
+        {
+            List<string> lines = new List<string>();
+            lines.Add("Статус: " + (result.Completed ? "полное чтение завершено" :
+                result.Cancelled ? "остановлено пользователем" : "не завершено"));
+            lines.Add("Обработано: " + RecommendationEngine.FormatBytes((ulong)Math.Max(0L, result.BytesProcessed)) +
+                " из " + RecommendationEngine.FormatBytes((ulong)Math.Max(0L, result.TotalBytes)) +
+                " · успешно прочитано: " + RecommendationEngine.FormatBytes((ulong)Math.Max(0L, result.BytesRead)));
+            lines.Add("Блоков: " + result.BlocksProcessed + " · ошибок чтения: " + result.ErrorBlocks +
+                " · медленных (200–999 мс): " + result.SlowBlocks + " · очень медленных (≥1 с): " + result.VerySlowBlocks);
+            lines.Add("Максимальное время чтения блока 1 МБ: " + result.MaximumBlockMilliseconds.ToString("N1") + " мс");
+            if (!String.IsNullOrWhiteSpace(result.ErrorMessage))
+                lines.Add("Причина остановки: " + result.ErrorMessage);
+            foreach (string sample in result.ErrorSamples)
+                lines.Add(sample);
+            return lines;
+        }
+
+        private static IList<string> GetSmartAttributeLines(IList<SmartAttribute> attributes)
+        {
+            List<string> lines = new List<string>();
+            foreach (SmartAttribute attribute in attributes)
+            {
+                string threshold = attribute.Threshold.HasValue ? attribute.Threshold.Value.ToString() : "н/д";
+                lines.Add(String.Format(System.Globalization.CultureInfo.CurrentCulture,
+                    "ID {0:X2} · {1} · Current {2} · Worst {3} · порог {4} · raw 0x{5}",
+                    attribute.Id, attribute.Name, attribute.Current, attribute.Worst, threshold,
+                    attribute.RawHex ?? attribute.RawValue.ToString("X12")));
+            }
+            return lines;
+        }
+
+        private SmartDeviceStatus FindSmartDeviceForDisk(int diskIndex)
+        {
+            if (_snapshot == null)
+                return null;
+            foreach (SmartDeviceStatus status in _snapshot.SmartDevices)
+            {
+                if (status.PhysicalDriveIndex == diskIndex)
+                    return status;
+            }
+            return null;
+        }
+
+        private static string GetSmartStatusText(SmartDeviceStatus status)
+        {
+            if (status == null)
+                return "нет данных через Windows SMART/WMI";
+            if (status.PredictsFailure == true)
+                return "Windows прогнозирует отказ — срочно сохраните данные";
+            if (status.PredictsFailure == false)
+                return "флаг прогнозируемого отказа не установлен (это не гарантия здоровья)";
+            return "статус не определён";
         }
 
         private async Task RunCleanupAsync()
@@ -1488,6 +1913,22 @@ namespace PcCare
         private static string NullableText(int? value)
         {
             return value.HasValue ? value.Value.ToString() : "нет данных";
+        }
+
+        private sealed class DiskChoice
+        {
+            public DiskChoice(PhysicalDiskInfo disk)
+            {
+                Disk = disk;
+            }
+
+            public PhysicalDiskInfo Disk { get; private set; }
+
+            public override string ToString()
+            {
+                string model = String.IsNullOrWhiteSpace(Disk.Model) ? "Модель не указана" : Disk.Model;
+                return "Диск " + Disk.Index + " — " + model + " (" + RecommendationEngine.FormatBytes(Disk.SizeBytes) + ")";
+            }
         }
 
         private sealed class StressModeChoice

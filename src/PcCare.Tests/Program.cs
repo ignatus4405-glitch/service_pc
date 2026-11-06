@@ -23,6 +23,8 @@ namespace PcCare.Tests
             failures += Run("CPU stress block matches its known checksum", TestCpuStressChecksum);
             failures += Run("memory stress allocation is capped safely", TestMemoryStressTargetIsCapped);
             failures += Run("memory stress is disabled when free RAM is too low", TestMemoryStressRequiresHeadroom);
+            failures += Run("ATA SMART attributes and temperature are parsed", TestSmartAttributesAreParsed);
+            failures += Run("disk scan latency buckets use documented thresholds", TestDiskLatencyClassification);
 
             if (failures == 0)
             {
@@ -227,6 +229,45 @@ namespace PcCare.Tests
             ulong lessThan256Megabytes = 255UL * 1024UL * 1024UL;
             int target = StressTestService.CalculateMemoryTargetMegabytes(lessThan256Megabytes, 1024);
             Assert(target == 0, "The memory test must not allocate when Windows has less than 256 MB free.");
+        }
+
+        private static void TestSmartAttributesAreParsed()
+        {
+            byte[] data = new byte[512];
+            data[2] = 194;
+            data[5] = 100;
+            data[6] = 90;
+            data[7] = 45;
+            data[14] = 197;
+            data[17] = 100;
+            data[18] = 80;
+            data[19] = 3;
+
+            byte[] thresholdData = new byte[512];
+            thresholdData[2] = 194;
+            thresholdData[3] = 30;
+            thresholdData[14] = 197;
+            thresholdData[15] = 10;
+
+            IDictionary<int, int> thresholds = SmartAttributeParser.ParseThresholds(thresholdData);
+            IList<SmartAttribute> attributes = SmartAttributeParser.ParseAttributes(data, thresholds);
+            Assert(attributes.Count == 2, "Expected both nonzero SMART attributes to be parsed.");
+            Assert(attributes[0].Id == 194 && attributes[0].Threshold == 30,
+                "Expected the temperature attribute and threshold to be matched by ID.");
+            Assert(attributes[0].RawValue == 45 && attributes[0].RawHex == "00000000002D",
+                "Expected the six-byte ATA raw value to be decoded little-endian.");
+            Assert(SmartAttributeParser.ParseAtaTemperature(attributes) == 45,
+                "Expected the common ATA temperature byte to be exposed as a best-effort reading.");
+        }
+
+        private static void TestDiskLatencyClassification()
+        {
+            Assert(DiskSurfaceTestService.ClassifyLatency(199.9) == DiskBlockSpeed.Normal,
+                "A block below 200 ms should not be classified as slow.");
+            Assert(DiskSurfaceTestService.ClassifyLatency(200.0) == DiskBlockSpeed.Slow,
+                "A block at 200 ms should be classified as slow.");
+            Assert(DiskSurfaceTestService.ClassifyLatency(1000.0) == DiskBlockSpeed.VerySlow,
+                "A block at 1000 ms should be classified as very slow.");
         }
 
         private static SystemSnapshot NewSnapshot()
