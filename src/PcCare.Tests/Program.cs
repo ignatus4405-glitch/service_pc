@@ -26,6 +26,7 @@ namespace PcCare.Tests
             failures += Run("ATA SMART attributes and temperature are parsed", TestSmartAttributesAreParsed);
             failures += Run("disk scan latency buckets use documented thresholds", TestDiskLatencyClassification);
             failures += Run("temperature probes convert deci-Kelvin and reject sentinel values", TestTemperatureConversion);
+            failures += Run("live chart scrolls to 60 seconds and completed chart keeps full history", TestLiveChartWindow);
             failures += Run("only explicitly labelled probes count as CPU temperature", TestCpuSensorIdentification);
 
             if (failures == 0)
@@ -281,6 +282,30 @@ namespace PcCare.Tests
                 "298.2 K should convert to approximately 25.05 C.");
             Assert(!LiveSensorService.TryConvertDeciKelvinToCelsius(0, out celsius),
                 "An empty/sentinel reading must remain unavailable rather than display an extreme temperature.");
+        }
+
+        private static void TestLiveChartWindow()
+        {
+            DateTime first = new DateTime(2026, 11, 6, 10, 0, 0);
+            DateTime plotStart;
+            double duration;
+
+            LiveChartWindow.Calculate(first, first, true, out plotStart, out duration);
+            Assert(plotStart == first.AddSeconds(-2) && Math.Abs(duration - 2.0) < 0.001,
+                "A single live sample should use a small nonzero plotting window.");
+
+            LiveChartWindow.Calculate(first, first.AddSeconds(30), true, out plotStart, out duration);
+            Assert(plotStart == first && Math.Abs(duration - 30.0) < 0.001,
+                "A short live test should show its elapsed interval without a large empty window.");
+
+            DateTime last = first.AddSeconds(90);
+            LiveChartWindow.Calculate(first, last, true, out plotStart, out duration);
+            Assert(plotStart == last.AddSeconds(-60) && Math.Abs(duration - 60.0) < 0.001,
+                "A long live test should scroll across only the most recent 60 seconds.");
+
+            LiveChartWindow.Calculate(first, last, false, out plotStart, out duration);
+            Assert(plotStart == first && Math.Abs(duration - 90.0) < 0.001,
+                "A completed test should retain the complete time range.");
         }
 
         private static void TestCpuSensorIdentification()

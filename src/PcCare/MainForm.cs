@@ -640,6 +640,7 @@ namespace PcCare
             _sensorChart = new LiveSensorChartPanel();
             _sensorChart.Width = CurrentCardWidth();
             _sensorChart.SetHistory(_sensorHistory);
+            _sensorChart.SetLive(_isStressTestRunning);
             flow.Controls.Add(_sensorChart);
 
             Panel settings = CreateCard(164);

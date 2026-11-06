@@ -31,6 +31,7 @@ namespace PcCare
         };
 
         private readonly List<ChartSample> _samples = new List<ChartSample>();
+        private bool _isLive;
 
         public LiveSensorChartPanel()
         {
@@ -67,6 +68,14 @@ namespace PcCare
             if (snapshot == null)
                 return;
             AddSampleCore(snapshot);
+            Invalidate();
+        }
+
+        public void SetLive(bool isLive)
+        {
+            if (_isLive == isLive)
+                return;
+            _isLive = isLive;
             Invalidate();
         }
 
@@ -125,8 +134,11 @@ namespace PcCare
             using (Pen gridPen = new Pen(GridColor))
             using (Pen axisPen = new Pen(Color.FromArgb(185, 195, 208)))
             {
+                string displayTitle = _isLive
+                    ? title + " · прокрутка окна до " + LiveChartWindow.LiveWindowSeconds + " с"
+                    : title;
                 Rectangle titleBounds = new Rectangle(12, row.Top + 1, Math.Max(80, ClientSize.Width - 24), 18);
-                TextRenderer.DrawText(graphics, title, titleFont, titleBounds, TextColor,
+                TextRenderer.DrawText(graphics, displayTitle, titleFont, titleBounds, TextColor,
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
 
                 int legendY = row.Top + 19;
@@ -171,18 +183,19 @@ namespace PcCare
                 else
                     DrawTemperatureLegend(graphics, axisFont, temperatureSeries, legendY);
 
-                DateTime firstTime = _samples[0].Timestamp;
+                DateTime firstSampleTime = _samples[0].Timestamp;
                 DateTime lastTime = _samples[_samples.Count - 1].Timestamp;
-                double totalSeconds = (lastTime - firstTime).TotalSeconds;
-                if (totalSeconds <= 0.0)
-                    totalSeconds = 1.0;
+                DateTime plotStart;
+                double totalSeconds;
+                LiveChartWindow.Calculate(firstSampleTime, lastTime, _isLive,
+                    out plotStart, out totalSeconds);
 
                 if (metric == Metric.Cpu)
                     DrawSingleSeries(graphics, CpuColor, plotLeft, plotRight, plotTop, plotBottom,
-                        minValue, maxValue, firstTime, totalSeconds, delegate(ChartSample sample) { return sample.CpuLoadPercent; });
+                        minValue, maxValue, plotStart, totalSeconds, delegate(ChartSample sample) { return sample.CpuLoadPercent; });
                 else if (metric == Metric.Memory)
                     DrawSingleSeries(graphics, MemoryColor, plotLeft, plotRight, plotTop, plotBottom,
-                        minValue, maxValue, firstTime, totalSeconds, delegate(ChartSample sample) { return sample.AvailableMemoryPercent; });
+                        minValue, maxValue, plotStart, totalSeconds, delegate(ChartSample sample) { return sample.AvailableMemoryPercent; });
                 else
                 {
                     int count = Math.Min(MaximumTemperatureSeries, temperatureSeries.Count);
@@ -191,7 +204,7 @@ namespace PcCare
                         string seriesName = temperatureSeries[i];
                         Color color = TemperatureColors[i % TemperatureColors.Length];
                         DrawTemperatureSeries(graphics, color, seriesName, plotLeft, plotRight, plotTop, plotBottom,
-                            minValue, maxValue, firstTime, totalSeconds);
+                            minValue, maxValue, plotStart, totalSeconds);
                     }
                     if (temperatureSeries.Count == 0)
                     {
@@ -204,7 +217,7 @@ namespace PcCare
                     }
                 }
 
-                string firstLabel = firstTime.ToString("HH:mm:ss", CultureInfo.CurrentCulture);
+                string firstLabel = plotStart.ToString("HH:mm:ss", CultureInfo.CurrentCulture);
                 string lastLabel = lastTime.ToString("HH:mm:ss", CultureInfo.CurrentCulture);
                 TextRenderer.DrawText(graphics, firstLabel, axisFont,
                     new Rectangle(plotLeft, row.Bottom - 15, 70, 14), MutedColor, TextFormatFlags.Left);
@@ -271,11 +284,17 @@ namespace PcCare
             double min, double max, DateTime first, double totalSeconds, Func<ChartSample, double?> valueSelector)
         {
             PointF? previous = null;
+            DateTime visibleEnd = first.AddSeconds(totalSeconds);
             using (Pen pen = new Pen(color, 2F))
             using (SolidBrush brush = new SolidBrush(color))
             {
                 foreach (ChartSample sample in _samples)
                 {
+                    if (sample.Timestamp < first || sample.Timestamp > visibleEnd)
+                    {
+                        previous = null;
+                        continue;
+                    }
                     double? value = valueSelector(sample);
                     if (!value.HasValue)
                     {
@@ -286,8 +305,7 @@ namespace PcCare
                         min, max, first, totalSeconds);
                     if (previous.HasValue)
                         graphics.DrawLine(pen, previous.Value, point);
-                    else
-                        graphics.FillEllipse(brush, point.X - 2.5F, point.Y - 2.5F, 5F, 5F);
+                    graphics.FillEllipse(brush, point.X - 2.0F, point.Y - 2.0F, 4F, 4F);
                     previous = point;
                 }
             }
@@ -297,11 +315,17 @@ namespace PcCare
             int top, int bottom, double min, double max, DateTime first, double totalSeconds)
         {
             PointF? previous = null;
+            DateTime visibleEnd = first.AddSeconds(totalSeconds);
             using (Pen pen = new Pen(color, 2F))
             using (SolidBrush brush = new SolidBrush(color))
             {
                 foreach (ChartSample sample in _samples)
                 {
+                    if (sample.Timestamp < first || sample.Timestamp > visibleEnd)
+                    {
+                        previous = null;
+                        continue;
+                    }
                     double value;
                     if (!sample.Temperatures.TryGetValue(seriesName, out value))
                     {
@@ -312,8 +336,7 @@ namespace PcCare
                         min, max, first, totalSeconds);
                     if (previous.HasValue)
                         graphics.DrawLine(pen, previous.Value, point);
-                    else
-                        graphics.FillEllipse(brush, point.X - 2.5F, point.Y - 2.5F, 5F, 5F);
+                    graphics.FillEllipse(brush, point.X - 2.0F, point.Y - 2.0F, 4F, 4F);
                     previous = point;
                 }
             }
