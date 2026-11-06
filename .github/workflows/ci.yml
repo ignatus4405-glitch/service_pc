@@ -1,0 +1,46 @@
+name: Build and test
+
+on:
+  push:
+    branches:
+      - main
+      - "arena/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v3
+
+      - name: Install .NET Framework 4.5 reference assemblies
+        shell: pwsh
+        run: nuget install .\build\packages.config -OutputDirectory packages -NonInteractive
+
+      - name: Build solution
+        shell: pwsh
+        run: ./scripts/build.ps1 -Configuration Release
+
+      - name: Run unit tests
+        shell: pwsh
+        run: .\src\PcCare.Tests\bin\Release\PcCare.Tests.exe
+
+      - name: Upload portable build
+        uses: actions/upload-artifact@v7
+        with:
+          name: PcCare-windows-build
+          path: |
+            src/PcCare/bin/Release/PcCare.exe
+            src/PcCare.Updater/bin/Release/PcCare.Updater.exe
+          if-no-files-found: error
+          retention-days: 14

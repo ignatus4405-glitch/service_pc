@@ -1,0 +1,58 @@
+name: Publish Windows release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v3
+
+      - name: Set application version from tag
+        shell: pwsh
+        run: |
+          $releaseTag = $env:GITHUB_REF_NAME
+          ./scripts/set-version.ps1 -Version $releaseTag
+          $releaseVersion = $releaseTag -replace '^[vV]', ''
+          "RELEASE_VERSION=$releaseVersion" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install .NET Framework 4.5 reference assemblies
+        shell: pwsh
+        run: nuget install .\build\packages.config -OutputDirectory packages -NonInteractive
+
+      - name: Build release binaries
+        shell: pwsh
+        run: |
+          ./scripts/build.ps1 -Configuration Release
+          .\src\PcCare.Tests\bin\Release\PcCare.Tests.exe
+
+      - name: Assemble portable ZIP
+        shell: pwsh
+        run: |
+          $staging = Join-Path $env:GITHUB_WORKSPACE "dist"
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          Copy-Item .\src\PcCare\bin\Release\PcCare.exe $staging
+          Copy-Item .\src\PcCare.Updater\bin\Release\PcCare.Updater.exe $staging
+          Copy-Item -Path @(".\README.md", ".\CHANGELOG.md", ".\LICENSE") -Destination $staging
+          $archive = Join-Path $env:GITHUB_WORKSPACE "PcCare-v$env:RELEASE_VERSION-windows.zip"
+          Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $archive -CompressionLevel Optimal -Force
+          "RELEASE_ARCHIVE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: PC Care v${{ env.RELEASE_VERSION }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: ${{ env.RELEASE_ARCHIVE }}
