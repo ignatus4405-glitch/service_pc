@@ -46,12 +46,13 @@ namespace PcCare
         private Label _pageSubtitle;
         private Label _updateStatusLabel;
         private Button _updateCheckButton;
-        private ComboBox _stressModeSelector;
+        private CheckedListBox _stressModeSelector;
         private ComboBox _stressDurationSelector;
         private Label _stressStatusLabel;
         private Button _stressStartButton;
         private Button _stressStopButton;
         private Label _liveSensorStatusLabel;
+        private ListView _liveSensorValuesList;
         private LiveSensorChartPanel _sensorChart;
         private readonly List<LiveSensorSnapshot> _sensorHistory = new List<LiveSensorSnapshot>();
         private ComboBox _diskSelector;
@@ -61,6 +62,7 @@ namespace PcCare
         private CancellationTokenSource _stressCancellation;
         private CancellationTokenSource _diskScanCancellation;
         private StressTestResult _lastStressTestResult;
+        private StressTestMode _selectedStressMode = StressTestMode.Cpu;
         private DiskScanResult _lastDiskScanResult;
         private LiveSensorSnapshot _latestSensorSnapshot;
         private string _stressProgressText = "Нагрузочный тест ещё не запускался.";
@@ -322,6 +324,7 @@ namespace PcCare
             _stressStartButton = null;
             _stressStopButton = null;
             _liveSensorStatusLabel = null;
+            _liveSensorValuesList = null;
             _sensorChart = null;
             _diskSelector = null;
             _diskScanStatusLabel = null;
@@ -379,7 +382,7 @@ namespace PcCare
                     break;
                 case "stress":
                     title = "Тест стабильности компьютера";
-                    subtitle = "Ручной ограниченный нагрузочный тест процессора и оперативной памяти.";
+                    subtitle = "Ручной ограниченный выбор нагрузок CPU, FPU, кэша и оперативной памяти.";
                     break;
                 case "drives":
                     title = "Накопители, SMART и поверхность";
@@ -610,11 +613,11 @@ namespace PcCare
 
         private void BuildStressPage(FlowLayoutPanel flow)
         {
-            AddPageIntro(flow, "Проверка стабильности CPU и RAM",
-                "Запускается только вручную. Результат показывает ошибки в ходе теста, но не гарантирует исправность компонентов.");
+            AddPageIntro(flow, "Проверка стабильности CPU, FPU, кэша и ОЗУ",
+                "Самостоятельный набор нагрузок с выбором компонентов. Запускается только вручную; результат не гарантирует исправность оборудования.");
 
             flow.Controls.Add(CreateInfoCard("Важное предупреждение",
-                "Нагрузочный тест может сильно нагреть процессор и вызвать шум вентиляторов или выключение компьютера. Сохраните работу и подключите ноутбук к питанию. Ниже показываются только датчики, доступные Windows (WMI/ACPI/SMART). Температура помечается как CPU только при явной маркировке датчика; общая ACPI-зона не обязательно соответствует CPU. Остановите тест при перегреве, зависаниях или необычном шуме. Проверка ОЗУ выделяет не более 25% свободной памяти (до 1 ГБ в 64-разрядном процессе / 512 МБ в 32-разрядном). GPU, видеопамять, вентиляторы и блок питания не мониторятся."));
+                "Нагрузки могут сильно нагреть процессор, усилить шум вентиляторов или выключить компьютер. Сохраните работу и подключите ноутбук к питанию. Каждый тест стартует только после подтверждения, ограничен 1–15 минутами и доступен для отмены. RAM-тест использует не более четверти свободной памяти и максимум 1 ГБ для 64-разрядного / 512 МБ для 32-разрядного процесса. Датчики показываются только при наличии реального источника; CPU-температурой считается только явно маркированный CPU-датчик. LibreHardwareMonitor/OpenHardwareMonitor должен быть запущен вами — PC Care не устанавливает монитор или драйверы. GPU и диски не нагружаются; напряжение, частота, мощность и вентиляторы отображаются лишь если источник их предоставляет."));
 
             Panel sensors = CreateCard(200);
             sensors.Margin = new Padding(0, 0, 0, 12);
@@ -623,7 +626,7 @@ namespace PcCare
             _liveSensorStatusLabel = AddLabel(sensors, GetLiveSensorStatusText(), 18, 39, 800, 130,
                 new Font("Segoe UI", 9F), MutedColor, false);
             LinkLabel sensorProviderLink = new LinkLabel();
-            sensorProviderLink.Text = "Как включить датчик: запустите LibreHardwareMonitor (официальный GitHub)";
+            sensorProviderLink.Text = "Как включить датчики: запустите LibreHardwareMonitor (официальный GitHub)";
             sensorProviderLink.LinkArea = new LinkArea(0, sensorProviderLink.Text.Length);
             sensorProviderLink.Location = new Point(18, 172);
             sensorProviderLink.Size = new Size(800, 18);
@@ -636,6 +639,31 @@ namespace PcCare
             sensors.Controls.Add(sensorProviderLink);
             flow.Controls.Add(sensors);
 
+            Panel sensorValues = CreateCard(258);
+            sensorValues.Margin = new Padding(0, 0, 0, 12);
+            AddLabel(sensorValues, "Текущие показания и диапазон", 18, 9, 700, 22,
+                new Font("Segoe UI Semibold", 10F, FontStyle.Bold), TextColor, false);
+            AddLabel(sensorValues, "Текущее, min/max и среднее вычисляются только по фактически полученным значениям текущего/последнего теста.",
+                18, 31, 800, 18, new Font("Segoe UI", 8F), MutedColor, false);
+            _liveSensorValuesList = new ListView();
+            _liveSensorValuesList.View = View.Details;
+            _liveSensorValuesList.FullRowSelect = true;
+            _liveSensorValuesList.GridLines = true;
+            _liveSensorValuesList.HideSelection = false;
+            _liveSensorValuesList.Location = new Point(18, 53);
+            _liveSensorValuesList.Size = new Size(Math.Max(300, sensorValues.Width - 36), 190);
+            _liveSensorValuesList.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
+            _liveSensorValuesList.Font = new Font("Segoe UI", 8.5F);
+            _liveSensorValuesList.Columns.Add("Параметр", 180);
+            _liveSensorValuesList.Columns.Add("Текущее", 80);
+            _liveSensorValuesList.Columns.Add("Мин.", 70);
+            _liveSensorValuesList.Columns.Add("Макс.", 70);
+            _liveSensorValuesList.Columns.Add("Среднее", 80);
+            _liveSensorValuesList.Columns.Add("Источник", 150);
+            sensorValues.Controls.Add(_liveSensorValuesList);
+            flow.Controls.Add(sensorValues);
+            UpdateLiveSensorValuesList();
+
             AddSectionHeading(flow, "Графики текущего или последнего теста");
             _sensorChart = new LiveSensorChartPanel();
             _sensorChart.Width = CurrentCardWidth();
@@ -643,33 +671,45 @@ namespace PcCare
             _sensorChart.SetLive(_isStressTestRunning);
             flow.Controls.Add(_sensorChart);
 
-            Panel settings = CreateCard(164);
+            Panel settings = CreateCard(208);
             settings.Margin = new Padding(0, 0, 0, 12);
-            AddLabel(settings, "Компоненты", 18, 9, 500, 22,
+            AddLabel(settings, "Компоненты нагрузки — можно выбрать несколько", 18, 9, 650, 22,
                 new Font("Segoe UI Semibold", 9F, FontStyle.Bold), TextColor, false);
-            _stressModeSelector = new ComboBox();
-            _stressModeSelector.DropDownStyle = ComboBoxStyle.DropDownList;
-            _stressModeSelector.Font = new Font("Segoe UI", 9F);
+            _stressModeSelector = new CheckedListBox();
+            _stressModeSelector.CheckOnClick = true;
+            _stressModeSelector.IntegralHeight = false;
+            _stressModeSelector.ItemHeight = 21;
+            _stressModeSelector.Font = new Font("Segoe UI", 8.5F);
             _stressModeSelector.Location = new Point(18, 33);
-            _stressModeSelector.Size = new Size(Math.Max(250, settings.Width - 40), 27);
+            _stressModeSelector.Size = new Size(Math.Max(250, settings.Width - 40), 94);
             _stressModeSelector.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-            _stressModeSelector.Items.Add(new StressModeChoice(StressTestMode.Cpu, "Процессор — нагрузка на логические ядра (до 64 потоков)"));
-            _stressModeSelector.Items.Add(new StressModeChoice(StressTestMode.Memory, "Оперативная память — запись и проверка шаблонов"));
-            _stressModeSelector.Items.Add(new StressModeChoice(StressTestMode.CpuAndMemory, "Комплексный тест — процессор и память одновременно"));
-            _stressModeSelector.SelectedIndex = 0;
+            _stressModeSelector.Items.Add(new StressModeChoice(StressTestMode.Cpu,
+                "CPU — целочисленные вычисления по логическим потокам (до 64)"),
+                (_selectedStressMode & StressTestMode.Cpu) != 0);
+            _stressModeSelector.Items.Add(new StressModeChoice(StressTestMode.Fpu,
+                "FPU — вычисления с плавающей точкой"),
+                (_selectedStressMode & StressTestMode.Fpu) != 0);
+            _stressModeSelector.Items.Add(new StressModeChoice(StressTestMode.Cache,
+                "Кэш — чтение/проверка рабочего набора 32 КиБ на поток"),
+                (_selectedStressMode & StressTestMode.Cache) != 0);
+            _stressModeSelector.Items.Add(new StressModeChoice(StressTestMode.Memory,
+                "ОЗУ — запись и проверка ограниченного буфера"),
+                (_selectedStressMode & StressTestMode.Memory) != 0);
+            _stressModeSelector.Enabled = !_isStressTestRunning;
             settings.Controls.Add(_stressModeSelector);
 
-            AddLabel(settings, "Длительность", 18, 69, 500, 22,
+            AddLabel(settings, "Длительность", 18, 133, 500, 22,
                 new Font("Segoe UI Semibold", 9F, FontStyle.Bold), TextColor, false);
             _stressDurationSelector = new ComboBox();
             _stressDurationSelector.DropDownStyle = ComboBoxStyle.DropDownList;
             _stressDurationSelector.Font = new Font("Segoe UI", 9F);
-            _stressDurationSelector.Location = new Point(18, 93);
-            _stressDurationSelector.Size = new Size(180, 27);
+            _stressDurationSelector.Location = new Point(18, 157);
+            _stressDurationSelector.Size = new Size(220, 27);
             _stressDurationSelector.Items.Add(new StressDurationChoice(1, "1 минута — быстрый тест"));
             _stressDurationSelector.Items.Add(new StressDurationChoice(5, "5 минут — стандартный тест"));
             _stressDurationSelector.Items.Add(new StressDurationChoice(15, "15 минут — расширенный тест"));
             _stressDurationSelector.SelectedIndex = 0;
+            _stressDurationSelector.Enabled = !_isStressTestRunning;
             settings.Controls.Add(_stressDurationSelector);
             flow.Controls.Add(settings);
 
@@ -690,11 +730,11 @@ namespace PcCare
             actions.Controls.Add(_stressStopButton);
             flow.Controls.Add(actions);
 
-            Panel progress = CreateCard(100);
+            Panel progress = CreateCard(150);
             progress.Margin = new Padding(0, 0, 0, 12);
             AddLabel(progress, "Состояние", 18, 10, 600, 24,
                 new Font("Segoe UI Semibold", 10F, FontStyle.Bold), TextColor, false);
-            _stressStatusLabel = AddLabel(progress, _stressProgressText, 18, 38, 800, 52,
+            _stressStatusLabel = AddLabel(progress, _stressProgressText, 18, 38, 800, 100,
                 new Font("Segoe UI", 9F), MutedColor, false);
             flow.Controls.Add(progress);
 
@@ -702,7 +742,7 @@ namespace PcCare
                 flow.Controls.Add(CreateDetailCard("Результат последнего теста", GetStressResultLines(_lastStressTestResult)));
 
             flow.Controls.Add(CreateInfoCard("Как трактовать результат",
-                "Ноль ошибок означает только, что выбранный короткий тест не обнаружил ошибок в выделенной памяти и вычислениях. Это не полноценная сертификация стабильности, не проверка всей физической ОЗУ и не диагноз температуры, GPU или блока питания."));
+                "Ноль ошибок означает только, что выбранные проверки не обнаружили ошибок в ограниченном тестовом наборе. Это не полноценная сертификация стабильности, не проверка всех физических модулей ОЗУ и не диагноз температур, GPU, дисков или блока питания."));
         }
 
         private void BuildDrivesPage(FlowLayoutPanel flow)
@@ -1222,27 +1262,48 @@ namespace PcCare
             }
         }
 
+        private StressTestMode GetSelectedStressMode()
+        {
+            StressTestMode mode = StressTestMode.None;
+            if (_stressModeSelector == null)
+                return mode;
+
+            foreach (object item in _stressModeSelector.CheckedItems)
+            {
+                StressModeChoice choice = item as StressModeChoice;
+                if (choice != null)
+                    mode |= choice.Mode;
+            }
+            return mode;
+        }
+
         private async Task RunStressTestAsync()
         {
             if (_isStressTestRunning || _isDiskScanRunning || _isScanning)
                 return;
 
-            StressModeChoice modeChoice = _stressModeSelector == null
-                ? null : _stressModeSelector.SelectedItem as StressModeChoice;
+            StressTestMode selectedMode = GetSelectedStressMode();
             StressDurationChoice durationChoice = _stressDurationSelector == null
                 ? null : _stressDurationSelector.SelectedItem as StressDurationChoice;
-            if (modeChoice == null || durationChoice == null)
+            if (selectedMode == StressTestMode.None)
+            {
+                MessageBox.Show(this, "Отметьте хотя бы один компонент теста: CPU, FPU, кэш или ОЗУ.",
+                    "Не выбраны компоненты", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            if (durationChoice == null)
                 return;
 
-            string selectedMode = GetStressModeName(modeChoice.Mode);
+            string selectedModeName = GetStressModeName(selectedMode);
             DialogResult answer = MessageBox.Show(this,
-                "Запустить тест «" + selectedMode + "» на " + durationChoice.Minutes + " мин.?\r\n\r\n" +
-                "Тест создаст высокую нагрузку. Сохраните документы и подключите ноутбук к питанию. Доступные Windows датчики выводятся ниже, но их наличие и связь с температурой CPU не гарантируются; GPU не мониторится. Тест можно остановить в любой момент.",
+                "Запустить нагрузку «" + selectedModeName + "» на " + durationChoice.Minutes + " мин.?\r\n\r\n" +
+                "Тест создаст высокую нагрузку на выбранные компоненты. Сохраните документы и подключите ноутбук к питанию. Датчики показывают только доступные источники и могут отсутствовать; температура помечается как CPU только при явной маркировке. GPU и диски не нагружаются. Тест можно остановить в любой момент.",
                 "Подтверждение нагрузочного теста", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
                 MessageBoxDefaultButton.Button2);
             if (answer != DialogResult.Yes)
                 return;
 
+            _selectedStressMode = selectedMode;
             _isStressTestRunning = true;
             _latestSensorSnapshot = null;
             _sensorHistory.Clear();
@@ -1266,7 +1327,7 @@ namespace PcCare
                 StressTestResult result = await _stressTestService.RunAsync(
                     new StressTestOptions
                     {
-                        Mode = modeChoice.Mode,
+                        Mode = selectedMode,
                         Duration = TimeSpan.FromMinutes(durationChoice.Minutes)
                     }, progress, cancellationToken);
                 _lastStressTestResult = result;
@@ -1326,6 +1387,7 @@ namespace PcCare
                         _sensorHistory.RemoveAt(0);
                     if (_sensorChart != null && !_sensorChart.IsDisposed)
                         _sensorChart.AddSample(snapshot);
+                    UpdateLiveSensorValuesList();
                     if (_liveSensorStatusLabel != null && !_liveSensorStatusLabel.IsDisposed &&
                         String.Equals(_currentPage, "stress", StringComparison.OrdinalIgnoreCase))
                         _liveSensorStatusLabel.Text = GetLiveSensorStatusText();
@@ -1342,6 +1404,122 @@ namespace PcCare
                 if (_liveSensorStatusLabel != null && !_liveSensorStatusLabel.IsDisposed)
                     _liveSensorStatusLabel.Text = "Не удалось обновить датчики: " + ex.Message;
             }
+        }
+
+        private void UpdateLiveSensorValuesList()
+        {
+            if (_liveSensorValuesList == null || _liveSensorValuesList.IsDisposed)
+                return;
+
+            _liveSensorValuesList.BeginUpdate();
+            try
+            {
+                _liveSensorValuesList.Items.Clear();
+                if (_latestSensorSnapshot == null || _latestSensorSnapshot.Readings.Count == 0)
+                {
+                    ListViewItem unavailable = new ListViewItem(_latestSensorSnapshot == null
+                        ? (_isStressTestRunning ? "Ожидание первого опроса датчиков" : "Запустите тест, чтобы получить показания датчиков")
+                        : "Доступные показания не получены");
+                    unavailable.SubItems.Add("—");
+                    unavailable.SubItems.Add("—");
+                    unavailable.SubItems.Add("—");
+                    unavailable.SubItems.Add("—");
+                    unavailable.SubItems.Add("Нет источника данных");
+                    _liveSensorValuesList.Items.Add(unavailable);
+                    return;
+                }
+
+                Dictionary<string, SensorStatistics> statistics = GetSensorStatistics();
+                foreach (LiveSensorValue reading in _latestSensorSnapshot.Readings)
+                {
+                    if (reading == null)
+                        continue;
+
+                    string name = String.IsNullOrWhiteSpace(reading.Name) ? "датчик" : reading.Name;
+                    string parameter = GetSensorTypeName(reading.SensorType) + " · " + name;
+                    ListViewItem item = new ListViewItem(parameter);
+                    item.SubItems.Add(FormatLiveSensorValue(reading));
+
+                    SensorStatistics sensorStatistics;
+                    if (statistics.TryGetValue(GetSensorKey(reading), out sensorStatistics))
+                    {
+                        item.SubItems.Add(FormatLiveSensorValue(sensorStatistics.Minimum, reading.Unit));
+                        item.SubItems.Add(FormatLiveSensorValue(sensorStatistics.Maximum, reading.Unit));
+                        item.SubItems.Add(FormatLiveSensorValue(sensorStatistics.Average, reading.Unit));
+                    }
+                    else
+                    {
+                        item.SubItems.Add("—");
+                        item.SubItems.Add("—");
+                        item.SubItems.Add("—");
+                    }
+
+                    item.SubItems.Add(String.IsNullOrWhiteSpace(reading.Source)
+                        ? "Источник не указан" : reading.Source);
+                    _liveSensorValuesList.Items.Add(item);
+                }
+            }
+            finally
+            {
+                _liveSensorValuesList.EndUpdate();
+            }
+        }
+
+        private Dictionary<string, SensorStatistics> GetSensorStatistics()
+        {
+            Dictionary<string, SensorStatistics> statistics =
+                new Dictionary<string, SensorStatistics>(StringComparer.OrdinalIgnoreCase);
+            foreach (LiveSensorSnapshot snapshot in _sensorHistory)
+            {
+                if (snapshot == null)
+                    continue;
+                foreach (LiveSensorValue reading in snapshot.Readings)
+                {
+                    if (reading == null)
+                        continue;
+                    string key = GetSensorKey(reading);
+                    SensorStatistics current;
+                    if (!statistics.TryGetValue(key, out current))
+                    {
+                        current = new SensorStatistics(reading.Value);
+                        statistics.Add(key, current);
+                    }
+                    else
+                    {
+                        current.Add(reading.Value);
+                    }
+                }
+            }
+            return statistics;
+        }
+
+        private static string GetSensorKey(LiveSensorValue reading)
+        {
+            return (reading.Source ?? String.Empty) + "|" + (reading.SensorType ?? String.Empty) + "|" +
+                (reading.Unit ?? String.Empty) + "|" + (reading.Identifier ?? String.Empty) + "|" +
+                (reading.Name ?? String.Empty);
+        }
+
+        private static string FormatLiveSensorValue(LiveSensorValue reading)
+        {
+            return FormatLiveSensorValue(reading.Value, reading.Unit);
+        }
+
+        private static string FormatLiveSensorValue(double value, string unit)
+        {
+            return value.ToString("N1") + (String.IsNullOrWhiteSpace(unit) ? String.Empty : " " + unit);
+        }
+
+        private static string GetSensorTypeName(string sensorType)
+        {
+            if (String.Equals(sensorType, "Load", StringComparison.OrdinalIgnoreCase)) return "Нагрузка";
+            if (String.Equals(sensorType, "Memory", StringComparison.OrdinalIgnoreCase)) return "Память";
+            if (String.Equals(sensorType, "Temperature", StringComparison.OrdinalIgnoreCase)) return "Температура";
+            if (String.Equals(sensorType, "Voltage", StringComparison.OrdinalIgnoreCase)) return "Напряжение";
+            if (String.Equals(sensorType, "Clock", StringComparison.OrdinalIgnoreCase)) return "Частота";
+            if (String.Equals(sensorType, "Fan", StringComparison.OrdinalIgnoreCase)) return "Вентилятор";
+            if (String.Equals(sensorType, "Power", StringComparison.OrdinalIgnoreCase)) return "Мощность";
+            return String.IsNullOrWhiteSpace(sensorType) ? "Показание" : sensorType;
         }
 
         private string GetLiveSensorStatusText()
@@ -1416,15 +1594,24 @@ namespace PcCare
         private static string GetStressProgressText(StressTestProgress progress)
         {
             List<string> details = new List<string>();
-            details.Add("Выполняется, прошло " + FormatStressElapsed(progress.Elapsed));
-            if (progress.CpuWorkers > 0)
-                details.Add("CPU: " + progress.CpuWorkers + " потоков, проверено блоков: " + progress.CpuBlocksCompleted +
-                    ", ошибок: " + progress.CpuErrors);
-            if (progress.MemoryMegabytes > 0)
-                details.Add("ОЗУ: " + progress.MemoryMegabytes + " МБ, проходов: " + progress.MemoryPassesCompleted +
-                    ", ошибок: " + progress.MemoryErrors);
-            else if (progress.MemoryPassesCompleted == 0 && progress.CpuWorkers == 0)
-                details.Add("Подготовка теста ОЗУ…");
+            details.Add("Выполняется · прошло " + FormatStressElapsed(progress.Elapsed) +
+                (progress.ComputeWorkers > 0 ? " · вычислительных потоков: " + progress.ComputeWorkers : String.Empty));
+
+            List<string> computeStats = new List<string>();
+            if ((progress.Mode & StressTestMode.Cpu) != 0)
+                computeStats.Add("CPU-блоки " + progress.CpuBlocksCompleted + " · ошибок " + progress.CpuErrors);
+            if ((progress.Mode & StressTestMode.Fpu) != 0)
+                computeStats.Add("FPU-блоки " + progress.FpuBlocksCompleted + " · ошибок " + progress.FpuErrors);
+            if (computeStats.Count > 0)
+                details.Add(String.Join("  |  ", computeStats.ToArray()));
+            if ((progress.Mode & StressTestMode.Cache) != 0)
+                details.Add("Кэш: проходов " + progress.CachePassesCompleted + " · ошибок " + progress.CacheErrors);
+            if ((progress.Mode & StressTestMode.Memory) != 0)
+            {
+                details.Add(progress.MemoryMegabytes > 0
+                    ? "ОЗУ: " + progress.MemoryMegabytes + " МБ · проходов " + progress.MemoryPassesCompleted + " · несовпадений " + progress.MemoryErrors
+                    : "Подготовка безопасного буфера ОЗУ…");
+            }
             return String.Join("\r\n", details.ToArray());
         }
 
@@ -1432,26 +1619,31 @@ namespace PcCare
         {
             if (!String.IsNullOrWhiteSpace(result.ErrorMessage))
                 return "Тест завершился с ошибкой: " + result.ErrorMessage;
-            if (result.CpuErrors > 0 || result.MemoryErrors > 0)
+            if (result.HasErrors)
                 return "Обнаружены ошибки во время теста. Прекратите нагрузку и проверьте компоненты отдельными средствами.";
             if (result.Cancelled)
                 return "Тест остановлен пользователем через " + FormatStressElapsed(result.Duration) + ".";
-            return "Тест завершён за " + FormatStressElapsed(result.Duration) + ". Ошибок в проверенном объёме не обнаружено; это не гарантия исправности компьютера.";
+            return "Тест завершён за " + FormatStressElapsed(result.Duration) + ". Ошибок в выбранных проверках не обнаружено; это не гарантия исправности компьютера.";
         }
 
         private static IList<string> GetStressResultLines(StressTestResult result)
         {
             List<string> lines = new List<string>();
-            lines.Add("Режим: " + GetStressModeName(result.Mode));
+            lines.Add("Выбрано: " + GetStressModeName(result.Mode));
             lines.Add("Время выполнения: " + FormatStressElapsed(result.Duration));
-            if (result.CpuWorkers > 0)
-                lines.Add("CPU: потоков " + result.CpuWorkers + " · проверено блоков " + result.CpuBlocksCompleted +
-                    " · ошибок вычислений " + result.CpuErrors);
-            if (result.MemoryMegabytes > 0)
+            if (result.ComputeWorkers > 0)
+                lines.Add("Вычислительных потоков: " + result.ComputeWorkers);
+            if ((result.Mode & StressTestMode.Cpu) != 0)
+                lines.Add("CPU: проверено блоков " + result.CpuBlocksCompleted + " · ошибок вычислений " + result.CpuErrors);
+            if ((result.Mode & StressTestMode.Fpu) != 0)
+                lines.Add("FPU: проверено блоков " + result.FpuBlocksCompleted + " · ошибок вычислений " + result.FpuErrors);
+            if ((result.Mode & StressTestMode.Cache) != 0)
+                lines.Add("Кэш: проходов " + result.CachePassesCompleted + " · несовпадений " + result.CacheErrors);
+            if ((result.Mode & StressTestMode.Memory) != 0)
                 lines.Add("ОЗУ: выделено " + result.MemoryMegabytes + " МБ · полных проходов " + result.MemoryPassesCompleted +
                     " · несовпадений " + result.MemoryErrors);
             if (!String.IsNullOrWhiteSpace(result.FirstMemoryError))
-                lines.Add("Первое несовпадение: " + result.FirstMemoryError);
+                lines.Add("Первое несовпадение ОЗУ: " + result.FirstMemoryError);
             if (!String.IsNullOrWhiteSpace(result.ErrorMessage))
                 lines.Add("Ошибка запуска/выполнения: " + result.ErrorMessage);
             lines.Add(result.Cancelled ? "Статус: остановлен пользователем." :
@@ -1461,12 +1653,12 @@ namespace PcCare
 
         private static string GetStressModeName(StressTestMode mode)
         {
-            switch (mode)
-            {
-                case StressTestMode.Memory: return "оперативная память";
-                case StressTestMode.CpuAndMemory: return "процессор и оперативная память";
-                default: return "процессор";
-            }
+            List<string> names = new List<string>();
+            if ((mode & StressTestMode.Cpu) != 0) names.Add("CPU");
+            if ((mode & StressTestMode.Fpu) != 0) names.Add("FPU");
+            if ((mode & StressTestMode.Cache) != 0) names.Add("кэш");
+            if ((mode & StressTestMode.Memory) != 0) names.Add("ОЗУ");
+            return names.Count == 0 ? "компоненты не выбраны" : String.Join(", ", names.ToArray());
         }
 
         private static string FormatStressElapsed(TimeSpan elapsed)
@@ -1976,6 +2168,35 @@ namespace PcCare
             {
                 string model = String.IsNullOrWhiteSpace(Disk.Model) ? "Модель не указана" : Disk.Model;
                 return "Диск " + Disk.Index + " — " + model + " (" + RecommendationEngine.FormatBytes(Disk.SizeBytes) + ")";
+            }
+        }
+
+        private sealed class SensorStatistics
+        {
+            public SensorStatistics(double value)
+            {
+                Minimum = value;
+                Maximum = value;
+                Total = value;
+                Count = 1;
+            }
+
+            public double Minimum { get; private set; }
+            public double Maximum { get; private set; }
+            public double Total { get; private set; }
+            public long Count { get; private set; }
+
+            public double Average
+            {
+                get { return Total / Count; }
+            }
+
+            public void Add(double value)
+            {
+                Minimum = Math.Min(Minimum, value);
+                Maximum = Math.Max(Maximum, value);
+                Total += value;
+                Count++;
             }
         }
 
