@@ -593,7 +593,7 @@ namespace PcCare
             _stressModeSelector.Location = new Point(18, 33);
             _stressModeSelector.Size = new Size(Math.Max(250, settings.Width - 40), 27);
             _stressModeSelector.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-            _stressModeSelector.Items.Add(new StressModeChoice(StressTestMode.Cpu, "Процессор — нагрузка на все логические ядра"));
+            _stressModeSelector.Items.Add(new StressModeChoice(StressTestMode.Cpu, "Процессор — нагрузка на логические ядра (до 64 потоков)"));
             _stressModeSelector.Items.Add(new StressModeChoice(StressTestMode.Memory, "Оперативная память — запись и проверка шаблонов"));
             _stressModeSelector.Items.Add(new StressModeChoice(StressTestMode.CpuAndMemory, "Комплексный тест — процессор и память одновременно"));
             _stressModeSelector.SelectedIndex = 0;
