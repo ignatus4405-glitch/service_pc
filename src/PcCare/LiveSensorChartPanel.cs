@@ -284,13 +284,12 @@ namespace PcCare
             double min, double max, DateTime first, double totalSeconds, Func<ChartSample, double?> valueSelector)
         {
             PointF? previous = null;
-            DateTime visibleEnd = first.AddSeconds(totalSeconds);
             using (Pen pen = new Pen(color, 2F))
             using (SolidBrush brush = new SolidBrush(color))
             {
                 foreach (ChartSample sample in _samples)
                 {
-                    if (sample.Timestamp < first || sample.Timestamp > visibleEnd)
+                    if (sample.Timestamp < first)
                     {
                         previous = null;
                         continue;
@@ -315,13 +314,12 @@ namespace PcCare
             int top, int bottom, double min, double max, DateTime first, double totalSeconds)
         {
             PointF? previous = null;
-            DateTime visibleEnd = first.AddSeconds(totalSeconds);
             using (Pen pen = new Pen(color, 2F))
             using (SolidBrush brush = new SolidBrush(color))
             {
                 foreach (ChartSample sample in _samples)
                 {
-                    if (sample.Timestamp < first || sample.Timestamp > visibleEnd)
+                    if (sample.Timestamp < first)
                     {
                         previous = null;
                         continue;
