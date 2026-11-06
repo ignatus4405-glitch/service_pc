@@ -52,6 +52,7 @@
     <Compile Include="Diagnostics\RecommendationEngine.cs" />
     <Compile Include="Diagnostics\CleanupService.cs" />
     <Compile Include="Diagnostics\WindowsMaintenance.cs" />
+    <Compile Include="Diagnostics\StressTestService.cs" />
     <Compile Include="Updates\UpdateService.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <None Include="app.manifest" />

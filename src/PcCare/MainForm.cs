@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using PcCare.Diagnostics;
@@ -27,6 +28,7 @@ namespace PcCare
         private readonly DiagnosticService _diagnosticService = new DiagnosticService();
         private readonly RecommendationEngine _recommendationEngine = new RecommendationEngine();
         private readonly CleanupService _cleanupService = new CleanupService();
+        private readonly StressTestService _stressTestService = new StressTestService();
         private readonly UpdateService _updateService = new UpdateService();
         private readonly Dictionary<string, Button> _navigationButtons = new Dictionary<string, Button>();
         private readonly List<Button> _scanButtons = new List<Button>();
@@ -41,10 +43,19 @@ namespace PcCare
         private Label _pageSubtitle;
         private Label _updateStatusLabel;
         private Button _updateCheckButton;
+        private ComboBox _stressModeSelector;
+        private ComboBox _stressDurationSelector;
+        private Label _stressStatusLabel;
+        private Button _stressStartButton;
+        private Button _stressStopButton;
+        private CancellationTokenSource _stressCancellation;
+        private StressTestResult _lastStressTestResult;
+        private string _stressProgressText = "Нагрузочный тест ещё не запускался.";
         private string _currentPage = "overview";
         private bool _isScanning;
         private bool _isCleaning;
         private bool _isCheckingUpdate;
+        private bool _isStressTestRunning;
 
         public MainForm()
         {
@@ -59,6 +70,7 @@ namespace PcCare
             BuildShell();
             ShowPage("overview");
             Shown += MainForm_Shown;
+            FormClosing += MainForm_FormClosing;
         }
 
         private async void MainForm_Shown(object sender, EventArgs e)
@@ -66,6 +78,25 @@ namespace PcCare
             await RunDiagnosticsAsync();
             if (!IsDisposed && !Disposing)
                 await CheckForUpdatesAsync(true);
+        }
+
+        private void MainForm_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            if (!_isStressTestRunning)
+                return;
+
+            DialogResult answer = MessageBox.Show(this,
+                "Нагрузочный тест ещё выполняется. Остановить его и закрыть PC Care?",
+                "Тест компьютера", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);
+            if (answer != DialogResult.Yes)
+            {
+                e.Cancel = true;
+                return;
+            }
+
+            if (_stressCancellation != null)
+                _stressCancellation.Cancel();
         }
 
         private void BuildShell()
@@ -200,6 +231,7 @@ namespace PcCare
 
             AddNavigationButton(navigation, "Обзор", "overview");
             AddNavigationButton(navigation, "Диагностика", "diagnostics");
+            AddNavigationButton(navigation, "Тест стабильности", "stress");
             AddNavigationButton(navigation, "Предложения", "recommendations");
             AddNavigationButton(navigation, "Очистка кэша", "cleanup");
             AddNavigationButton(navigation, "Оптимизация", "optimization");
@@ -233,7 +265,21 @@ namespace PcCare
             button.ForeColor = Color.FromArgb(222, 229, 239);
             button.BackColor = SidebarColor;
             button.Cursor = Cursors.Hand;
-            button.Click += delegate { ShowPage(page); };
+            button.Click += delegate
+            {
+                if (_isStressTestRunning && !String.Equals(page, "stress", StringComparison.OrdinalIgnoreCase))
+                {
+                    DialogResult stop = MessageBox.Show(this,
+                        "Нагрузочный тест ещё выполняется. Остановить его и перейти в другой раздел?",
+                        "Тест компьютера", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                        MessageBoxDefaultButton.Button2);
+                    if (stop != DialogResult.Yes)
+                        return;
+                    if (_stressCancellation != null)
+                        _stressCancellation.Cancel();
+                }
+                ShowPage(page);
+            };
             navigation.Controls.Add(button);
             _navigationButtons[page] = button;
         }
@@ -248,6 +294,11 @@ namespace PcCare
             _scanButtons.Clear();
             _updateStatusLabel = null;
             _updateCheckButton = null;
+            _stressModeSelector = null;
+            _stressDurationSelector = null;
+            _stressStatusLabel = null;
+            _stressStartButton = null;
+            _stressStopButton = null;
 
             foreach (KeyValuePair<string, Button> entry in _navigationButtons)
             {
@@ -278,6 +329,7 @@ namespace PcCare
             switch (page)
             {
                 case "diagnostics": BuildDiagnosticsPage(flow); break;
+                case "stress": BuildStressPage(flow); break;
                 case "recommendations": BuildRecommendationsPage(flow); break;
                 case "cleanup": BuildCleanupPage(flow); break;
                 case "optimization": BuildOptimizationPage(flow); break;
@@ -295,6 +347,10 @@ namespace PcCare
                 case "diagnostics":
                     title = "Диагностика компьютера";
                     subtitle = "Сведения о процессоре, памяти, накопителях и состоянии SMART.";
+                    break;
+                case "stress":
+                    title = "Тест стабильности компьютера";
+                    subtitle = "Ручной ограниченный нагрузочный тест процессора и оперативной памяти.";
                     break;
                 case "recommendations":
                     title = "Предложения по оптимизации";
@@ -517,6 +573,76 @@ namespace PcCare
 
             if (_snapshot.Notes.Count > 0)
                 flow.Controls.Add(CreateDetailCard("Примечания диагностики", _snapshot.Notes));
+        }
+
+        private void BuildStressPage(FlowLayoutPanel flow)
+        {
+            AddPageIntro(flow, "Проверка стабильности CPU и RAM",
+                "Запускается только вручную. Результат показывает ошибки в ходе теста, но не гарантирует исправность компонентов.");
+
+            flow.Controls.Add(CreateInfoCard("Важное предупреждение",
+                "Нагрузочный тест может сильно нагреть процессор и вызвать шум вентиляторов или выключение компьютера. Сохраните работу, подключите ноутбук к питанию и следите за температурой отдельной утилитой: PC Care её не измеряет. Остановите тест при перегреве, зависаниях или необычном шуме. Проверка ОЗУ выделяет не более 25% свободной памяти (до 1 ГБ в 64-разрядном процессе / 512 МБ в 32-разрядном). GPU, видеопамять, блок питания и накопители здесь не тестируются."));
+
+            Panel settings = CreateCard(164);
+            settings.Margin = new Padding(0, 0, 0, 12);
+            AddLabel(settings, "Компоненты", 18, 9, 500, 22,
+                new Font("Segoe UI Semibold", 9F, FontStyle.Bold), TextColor, false);
+            _stressModeSelector = new ComboBox();
+            _stressModeSelector.DropDownStyle = ComboBoxStyle.DropDownList;
+            _stressModeSelector.Font = new Font("Segoe UI", 9F);
+            _stressModeSelector.Location = new Point(18, 33);
+            _stressModeSelector.Size = new Size(Math.Max(250, settings.Width - 40), 27);
+            _stressModeSelector.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+            _stressModeSelector.Items.Add(new StressModeChoice(StressTestMode.Cpu, "Процессор — нагрузка на все логические ядра"));
+            _stressModeSelector.Items.Add(new StressModeChoice(StressTestMode.Memory, "Оперативная память — запись и проверка шаблонов"));
+            _stressModeSelector.Items.Add(new StressModeChoice(StressTestMode.CpuAndMemory, "Комплексный тест — процессор и память одновременно"));
+            _stressModeSelector.SelectedIndex = 0;
+            settings.Controls.Add(_stressModeSelector);
+
+            AddLabel(settings, "Длительность", 18, 69, 500, 22,
+                new Font("Segoe UI Semibold", 9F, FontStyle.Bold), TextColor, false);
+            _stressDurationSelector = new ComboBox();
+            _stressDurationSelector.DropDownStyle = ComboBoxStyle.DropDownList;
+            _stressDurationSelector.Font = new Font("Segoe UI", 9F);
+            _stressDurationSelector.Location = new Point(18, 93);
+            _stressDurationSelector.Size = new Size(180, 27);
+            _stressDurationSelector.Items.Add(new StressDurationChoice(1, "1 минута — быстрый тест"));
+            _stressDurationSelector.Items.Add(new StressDurationChoice(5, "5 минут — стандартный тест"));
+            _stressDurationSelector.Items.Add(new StressDurationChoice(15, "15 минут — расширенный тест"));
+            _stressDurationSelector.SelectedIndex = 0;
+            settings.Controls.Add(_stressDurationSelector);
+            flow.Controls.Add(settings);
+
+            FlowLayoutPanel actions = new FlowLayoutPanel();
+            actions.AutoSize = true;
+            actions.WrapContents = true;
+            actions.BackColor = PageColor;
+            actions.Margin = new Padding(0, 0, 0, 10);
+            _stressStartButton = CreateButton(_isStressTestRunning ? "Тест выполняется…" : "Начать тест", true);
+            _stressStartButton.Size = new Size(190, 44);
+            _stressStartButton.Enabled = !_isStressTestRunning;
+            _stressStartButton.Click += async delegate { await RunStressTestAsync(); };
+            actions.Controls.Add(_stressStartButton);
+            _stressStopButton = CreateButton("Остановить тест", false);
+            _stressStopButton.Size = new Size(170, 44);
+            _stressStopButton.Enabled = _isStressTestRunning;
+            _stressStopButton.Click += delegate { StopStressTest(); };
+            actions.Controls.Add(_stressStopButton);
+            flow.Controls.Add(actions);
+
+            Panel progress = CreateCard(100);
+            progress.Margin = new Padding(0, 0, 0, 12);
+            AddLabel(progress, "Состояние", 18, 10, 600, 24,
+                new Font("Segoe UI Semibold", 10F, FontStyle.Bold), TextColor, false);
+            _stressStatusLabel = AddLabel(progress, _stressProgressText, 18, 38, 800, 52,
+                new Font("Segoe UI", 9F), MutedColor, false);
+            flow.Controls.Add(progress);
+
+            if (_lastStressTestResult != null)
+                flow.Controls.Add(CreateDetailCard("Результат последнего теста", GetStressResultLines(_lastStressTestResult)));
+
+            flow.Controls.Add(CreateInfoCard("Как трактовать результат",
+                "Ноль ошибок означает только, что выбранный короткий тест не обнаружил ошибок в выделенной памяти и вычислениях. Это не полноценная сертификация стабильности, не проверка всей физической ОЗУ и не диагноз температуры, GPU или блока питания."));
         }
 
         private void BuildRecommendationsPage(FlowLayoutPanel flow)
@@ -837,6 +963,11 @@ namespace PcCare
                     (label.Anchor & AnchorStyles.Right) == AnchorStyles.Right)
                     label.Width = Math.Max(24, parent.ClientSize.Width - label.Left - 18);
 
+                ComboBox combo = child as ComboBox;
+                if (combo != null && (combo.Anchor & AnchorStyles.Left) == AnchorStyles.Left &&
+                    (combo.Anchor & AnchorStyles.Right) == AnchorStyles.Right)
+                    combo.Width = Math.Max(160, parent.ClientSize.Width - combo.Left - 20);
+
                 if (child.HasChildren)
                     ResizeAnchoredLabels(child);
             }
@@ -886,6 +1017,141 @@ namespace PcCare
                 if (!IsDisposed && !Disposing)
                     ShowPage(_currentPage);
             }
+        }
+
+        private async Task RunStressTestAsync()
+        {
+            if (_isStressTestRunning)
+                return;
+
+            StressModeChoice modeChoice = _stressModeSelector == null
+                ? null : _stressModeSelector.SelectedItem as StressModeChoice;
+            StressDurationChoice durationChoice = _stressDurationSelector == null
+                ? null : _stressDurationSelector.SelectedItem as StressDurationChoice;
+            if (modeChoice == null || durationChoice == null)
+                return;
+
+            string selectedMode = GetStressModeName(modeChoice.Mode);
+            DialogResult answer = MessageBox.Show(this,
+                "Запустить тест «" + selectedMode + "» на " + durationChoice.Minutes + " мин.?\r\n\r\n" +
+                "Тест создаст высокую нагрузку. Сохраните открытые документы, подключите ноутбук к питанию и следите за температурой. " +
+                "PC Care не измеряет температуру и GPU. Тест можно остановить в любой момент.",
+                "Подтверждение нагрузочного теста", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);
+            if (answer != DialogResult.Yes)
+                return;
+
+            _isStressTestRunning = true;
+            _stressCancellation = new CancellationTokenSource();
+            _stressProgressText = "Подготовка нагрузочного теста…";
+            ShowPage("stress");
+            CancellationToken cancellationToken = _stressCancellation.Token;
+            Progress<StressTestProgress> progress = new Progress<StressTestProgress>(delegate(StressTestProgress update)
+            {
+                if (!_isStressTestRunning || IsDisposed || Disposing)
+                    return;
+                _stressProgressText = GetStressProgressText(update);
+                if (_stressStatusLabel != null && !_stressStatusLabel.IsDisposed)
+                    _stressStatusLabel.Text = _stressProgressText;
+            });
+
+            try
+            {
+                StressTestResult result = await _stressTestService.RunAsync(
+                    new StressTestOptions
+                    {
+                        Mode = modeChoice.Mode,
+                        Duration = TimeSpan.FromMinutes(durationChoice.Minutes)
+                    }, progress, cancellationToken);
+                _lastStressTestResult = result;
+                _stressProgressText = GetStressSummary(result);
+            }
+            catch (Exception ex)
+            {
+                _stressProgressText = "Не удалось выполнить тест: " + ex.Message;
+            }
+            finally
+            {
+                _isStressTestRunning = false;
+                if (_stressCancellation != null)
+                {
+                    _stressCancellation.Dispose();
+                    _stressCancellation = null;
+                }
+                if (!IsDisposed && !Disposing)
+                    ShowPage(_currentPage);
+            }
+        }
+
+        private void StopStressTest()
+        {
+            if (_stressCancellation == null || !_isStressTestRunning)
+                return;
+            _stressProgressText = "Остановка теста… ожидается завершение текущего блока.";
+            if (_stressStatusLabel != null && !_stressStatusLabel.IsDisposed)
+                _stressStatusLabel.Text = _stressProgressText;
+            _stressCancellation.Cancel();
+        }
+
+        private static string GetStressProgressText(StressTestProgress progress)
+        {
+            List<string> details = new List<string>();
+            details.Add("Выполняется, прошло " + FormatStressElapsed(progress.Elapsed));
+            if (progress.CpuWorkers > 0)
+                details.Add("CPU: " + progress.CpuWorkers + " потоков, проверено блоков: " + progress.CpuBlocksCompleted +
+                    ", ошибок: " + progress.CpuErrors);
+            if (progress.MemoryMegabytes > 0)
+                details.Add("ОЗУ: " + progress.MemoryMegabytes + " МБ, проходов: " + progress.MemoryPassesCompleted +
+                    ", ошибок: " + progress.MemoryErrors);
+            else if (progress.MemoryPassesCompleted == 0 && progress.CpuWorkers == 0)
+                details.Add("Подготовка теста ОЗУ…");
+            return String.Join("\r\n", details.ToArray());
+        }
+
+        private static string GetStressSummary(StressTestResult result)
+        {
+            if (!String.IsNullOrWhiteSpace(result.ErrorMessage))
+                return "Тест завершился с ошибкой: " + result.ErrorMessage;
+            if (result.CpuErrors > 0 || result.MemoryErrors > 0)
+                return "Обнаружены ошибки во время теста. Прекратите нагрузку и проверьте компоненты отдельными средствами.";
+            if (result.Cancelled)
+                return "Тест остановлен пользователем через " + FormatStressElapsed(result.Duration) + ".";
+            return "Тест завершён за " + FormatStressElapsed(result.Duration) + ". Ошибок в проверенном объёме не обнаружено; это не гарантия исправности компьютера.";
+        }
+
+        private static IList<string> GetStressResultLines(StressTestResult result)
+        {
+            List<string> lines = new List<string>();
+            lines.Add("Режим: " + GetStressModeName(result.Mode));
+            lines.Add("Время выполнения: " + FormatStressElapsed(result.Duration));
+            if (result.CpuWorkers > 0)
+                lines.Add("CPU: потоков " + result.CpuWorkers + " · проверено блоков " + result.CpuBlocksCompleted +
+                    " · ошибок вычислений " + result.CpuErrors);
+            if (result.MemoryMegabytes > 0)
+                lines.Add("ОЗУ: выделено " + result.MemoryMegabytes + " МБ · полных проходов " + result.MemoryPassesCompleted +
+                    " · несовпадений " + result.MemoryErrors);
+            if (!String.IsNullOrWhiteSpace(result.FirstMemoryError))
+                lines.Add("Первое несовпадение: " + result.FirstMemoryError);
+            if (!String.IsNullOrWhiteSpace(result.ErrorMessage))
+                lines.Add("Ошибка запуска/выполнения: " + result.ErrorMessage);
+            lines.Add(result.Cancelled ? "Статус: остановлен пользователем." :
+                result.HasErrors ? "Статус: обнаружены ошибки или тест не удалось завершить." : "Статус: завершён без обнаруженных ошибок.");
+            return lines;
+        }
+
+        private static string GetStressModeName(StressTestMode mode)
+        {
+            switch (mode)
+            {
+                case StressTestMode.Memory: return "оперативная память";
+                case StressTestMode.CpuAndMemory: return "процессор и оперативная память";
+                default: return "процессор";
+            }
+        }
+
+        private static string FormatStressElapsed(TimeSpan elapsed)
+        {
+            return String.Format("{0:00}:{1:00}", (int)elapsed.TotalMinutes, elapsed.Seconds);
         }
 
         private async Task RunCleanupAsync()
@@ -1222,6 +1488,40 @@ namespace PcCare
         private static string NullableText(int? value)
         {
             return value.HasValue ? value.Value.ToString() : "нет данных";
+        }
+
+        private sealed class StressModeChoice
+        {
+            public StressModeChoice(StressTestMode mode, string title)
+            {
+                Mode = mode;
+                Title = title;
+            }
+
+            public StressTestMode Mode { get; private set; }
+            public string Title { get; private set; }
+
+            public override string ToString()
+            {
+                return Title;
+            }
+        }
+
+        private sealed class StressDurationChoice
+        {
+            public StressDurationChoice(int minutes, string title)
+            {
+                Minutes = minutes;
+                Title = title;
+            }
+
+            public int Minutes { get; private set; }
+            public string Title { get; private set; }
+
+            public override string ToString()
+            {
+                return Title;
+            }
         }
 
         private static Color SeverityColor(RecommendationSeverity severity)
