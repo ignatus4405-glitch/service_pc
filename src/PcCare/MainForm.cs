@@ -1013,7 +1013,7 @@ namespace PcCare
                     ? "Скачать и установить её сейчас? Приложение будет перезапущено."
                     : "Для этого релиза нет ZIP-пакета. Открыть страницу релиза?");
             DialogResult choice = MessageBox.Show(this, prompt, "Доступно обновление PC Care",
-                MessageBoxButtons.YesNo, MessageBoxIcon.Information, MessageBoxDefaultButton.ButtonYes);
+                MessageBoxButtons.YesNo, MessageBoxIcon.Information, MessageBoxDefaultButton.Button1);
             if (choice != DialogResult.Yes)
                 return;
 
