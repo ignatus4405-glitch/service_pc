@@ -46,6 +46,7 @@
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="MainForm.cs" />
+    <Compile Include="LiveSensorChartPanel.cs" />
     <Compile Include="Models\SystemSnapshot.cs" />
     <Compile Include="Models\ReleaseInfo.cs" />
     <Compile Include="Diagnostics\DiagnosticService.cs" />

@@ -25,6 +25,8 @@ namespace PcCare.Tests
             failures += Run("memory stress is disabled when free RAM is too low", TestMemoryStressRequiresHeadroom);
             failures += Run("ATA SMART attributes and temperature are parsed", TestSmartAttributesAreParsed);
             failures += Run("disk scan latency buckets use documented thresholds", TestDiskLatencyClassification);
+            failures += Run("temperature probes convert deci-Kelvin and reject sentinel values", TestTemperatureConversion);
+            failures += Run("only explicitly labelled probes count as CPU temperature", TestCpuSensorIdentification);
 
             if (failures == 0)
             {
@@ -268,6 +270,25 @@ namespace PcCare.Tests
                 "A block at 200 ms should be classified as slow.");
             Assert(DiskSurfaceTestService.ClassifyLatency(1000.0) == DiskBlockSpeed.VerySlow,
                 "A block at 1000 ms should be classified as very slow.");
+        }
+
+        private static void TestTemperatureConversion()
+        {
+            double celsius;
+            Assert(LiveSensorService.TryConvertDeciKelvinToCelsius(2982, out celsius),
+                "A plausible deci-Kelvin reading should convert to Celsius.");
+            Assert(Math.Abs(celsius - 25.05) < 0.01,
+                "298.2 K should convert to approximately 25.05 C.");
+            Assert(!LiveSensorService.TryConvertDeciKelvinToCelsius(0, out celsius),
+                "An empty/sentinel reading must remain unavailable rather than display an extreme temperature.");
+        }
+
+        private static void TestCpuSensorIdentification()
+        {
+            Assert(LiveSensorService.IsExplicitCpuSensor("CPU Package", String.Empty),
+                "A sensor explicitly labelled CPU should be identified as a CPU reading.");
+            Assert(!LiveSensorService.IsExplicitCpuSensor("ACPI\\ThermalZone\\TZ00", String.Empty),
+                "A generic ACPI zone must not be mislabelled as CPU temperature.");
         }
 
         private static SystemSnapshot NewSnapshot()

@@ -51,6 +51,8 @@ namespace PcCare
         private Button _stressStartButton;
         private Button _stressStopButton;
         private Label _liveSensorStatusLabel;
+        private LiveSensorChartPanel _sensorChart;
+        private readonly List<LiveSensorSnapshot> _sensorHistory = new List<LiveSensorSnapshot>();
         private ComboBox _diskSelector;
         private Label _diskScanStatusLabel;
         private Button _diskScanStartButton;
@@ -319,6 +321,7 @@ namespace PcCare
             _stressStartButton = null;
             _stressStopButton = null;
             _liveSensorStatusLabel = null;
+            _sensorChart = null;
             _diskSelector = null;
             _diskScanStatusLabel = null;
             _diskScanStartButton = null;
@@ -610,15 +613,21 @@ namespace PcCare
                 "Запускается только вручную. Результат показывает ошибки в ходе теста, но не гарантирует исправность компонентов.");
 
             flow.Controls.Add(CreateInfoCard("Важное предупреждение",
-                "Нагрузочный тест может сильно нагреть процессор и вызвать шум вентиляторов или выключение компьютера. Сохраните работу и подключите ноутбук к питанию. Ниже показываются только датчики, доступные Windows (WMI/ACPI/SMART); показание ACPI не обязательно является температурой кристалла CPU. Остановите тест при перегреве, зависаниях или необычном шуме. Проверка ОЗУ выделяет не более 25% свободной памяти (до 1 ГБ в 64-разрядном процессе / 512 МБ в 32-разрядном). GPU, видеопамять, вентиляторы и блок питания не мониторятся."));
+                "Нагрузочный тест может сильно нагреть процессор и вызвать шум вентиляторов или выключение компьютера. Сохраните работу и подключите ноутбук к питанию. Ниже показываются только датчики, доступные Windows (WMI/ACPI/SMART). Температура помечается как CPU только при явной маркировке датчика; общая ACPI-зона не обязательно соответствует CPU. Остановите тест при перегреве, зависаниях или необычном шуме. Проверка ОЗУ выделяет не более 25% свободной памяти (до 1 ГБ в 64-разрядном процессе / 512 МБ в 32-разрядном). GPU, видеопамять, вентиляторы и блок питания не мониторятся."));
 
             Panel sensors = CreateCard(200);
             sensors.Margin = new Padding(0, 0, 0, 12);
             AddLabel(sensors, "Доступные датчики во время теста", 18, 10, 700, 24,
                 new Font("Segoe UI Semibold", 10F, FontStyle.Bold), TextColor, false);
-            _liveSensorStatusLabel = AddLabel(sensors, GetLiveSensorStatusText(), 18, 39, 800, 152,
+            _liveSensorStatusLabel = AddLabel(sensors, GetLiveSensorStatusText(), 18, 39, 800, 130,
                 new Font("Segoe UI", 9F), MutedColor, false);
             flow.Controls.Add(sensors);
+
+            AddSectionHeading(flow, "Графики текущего или последнего теста");
+            _sensorChart = new LiveSensorChartPanel();
+            _sensorChart.Width = CurrentCardWidth();
+            _sensorChart.SetHistory(_sensorHistory);
+            flow.Controls.Add(_sensorChart);
 
             Panel settings = CreateCard(164);
             settings.Margin = new Padding(0, 0, 0, 12);
@@ -1222,6 +1231,7 @@ namespace PcCare
 
             _isStressTestRunning = true;
             _latestSensorSnapshot = null;
+            _sensorHistory.Clear();
             _stressCancellation = new CancellationTokenSource();
             _stressProgressText = "Подготовка нагрузочного теста…";
             ShowPage("stress");
@@ -1297,6 +1307,11 @@ namespace PcCare
                         return;
 
                     _latestSensorSnapshot = snapshot;
+                    _sensorHistory.Add(snapshot);
+                    if (_sensorHistory.Count > 900)
+                        _sensorHistory.RemoveAt(0);
+                    if (_sensorChart != null && !_sensorChart.IsDisposed)
+                        _sensorChart.AddSample(snapshot);
                     if (_liveSensorStatusLabel != null && !_liveSensorStatusLabel.IsDisposed &&
                         String.Equals(_currentPage, "stress", StringComparison.OrdinalIgnoreCase))
                         _liveSensorStatusLabel.Text = GetLiveSensorStatusText();
@@ -1331,37 +1346,56 @@ namespace PcCare
             else
                 lines.Add("ОЗУ (WMI Windows): данные недоступны");
 
-            int displayedZones = Math.Min(2, _latestSensorSnapshot.ThermalZones.Count);
-            for (int i = 0; i < displayedZones; i++)
+            int cpuTemperatureCount = 0;
+            int otherTemperatureCount = 0;
+            bool displayedCpuTemperature = false;
+            bool displayedOtherTemperature = false;
+            foreach (TemperatureSensorReading reading in _latestSensorSnapshot.TemperatureSensors)
             {
-                ThermalZoneReading zone = _latestSensorSnapshot.ThermalZones[i];
-                lines.Add("ACPI/WMI zone " + (String.IsNullOrWhiteSpace(zone.Name) ? "thermal zone" : zone.Name) + ": " +
-                    zone.TemperatureCelsius.ToString("N1") + " °C (не обязательно температура CPU)");
+                string source = String.IsNullOrWhiteSpace(reading.Source) ? "WMI" : reading.Source;
+                string name = String.IsNullOrWhiteSpace(reading.Name) ? "датчик" : reading.Name;
+                if (reading.IsCpuSensor)
+                {
+                    cpuTemperatureCount++;
+                    if (!displayedCpuTemperature)
+                    {
+                        lines.Add("Температура CPU (" + source + ", " + name + "): " +
+                            reading.TemperatureCelsius.ToString("N1") + " °C");
+                        displayedCpuTemperature = true;
+                    }
+                }
+                else
+                {
+                    otherTemperatureCount++;
+                    if (!displayedOtherTemperature)
+                    {
+                        lines.Add("Другой датчик (" + source + ", " + name + "): " +
+                            reading.TemperatureCelsius.ToString("N1") + " °C — не подтверждён как CPU");
+                        displayedOtherTemperature = true;
+                    }
+                }
             }
+            if (cpuTemperatureCount == 0)
+                lines.Add("Температура CPU: доступные провайдеры не предоставили явно обозначенный CPU-датчик.");
 
-            int smartTemperatures = 0;
-            int displayedSmartTemperatures = 0;
+            bool hasSmartTemperature = false;
             if (_snapshot != null)
             {
                 foreach (SmartDeviceStatus device in _snapshot.SmartDevices)
                 {
                     if (!device.TemperatureCelsius.HasValue)
                         continue;
-                    smartTemperatures++;
-                    if (displayedSmartTemperatures >= 2)
-                        continue;
                     string name = device.PhysicalDriveIndex.HasValue
                         ? "Диск " + device.PhysicalDriveIndex.Value : "Накопитель";
                     lines.Add(name + " (ATA SMART): " + device.TemperatureCelsius.Value.ToString("N0") + " °C*");
-                    displayedSmartTemperatures++;
+                    hasSmartTemperature = true;
+                    break;
                 }
             }
-            if (smartTemperatures > displayedSmartTemperatures)
-                lines.Add("Ещё накопителей с ATA SMART температурой: " + (smartTemperatures - displayedSmartTemperatures));
-            if (displayedZones == 0 && smartTemperatures == 0)
-                lines.Add("Температура: ACPI/ATA датчики не предоставили данных.");
+            if (cpuTemperatureCount == 0 && otherTemperatureCount == 0 && !hasSmartTemperature)
+                lines.Add("Доступные WMI/ACPI/ATA температурные источники не предоставили показаний.");
             lines.Add("Обновлено " + _latestSensorSnapshot.CollectedAt.ToString("HH:mm:ss") +
-                "; ACPI может не отражать CPU, *SMART — снимок последней диагностики.");
+                "; общая ACPI-зона не подменяет CPU, *SMART — снимок последней диагностики.");
             return String.Join("\r\n", lines.ToArray());
         }
 
