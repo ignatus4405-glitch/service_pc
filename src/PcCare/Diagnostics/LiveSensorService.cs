@@ -49,12 +49,9 @@ namespace PcCare.Diagnostics
         {
             try
             {
-                EnumerationOptions options = new EnumerationOptions();
-                options.Timeout = QueryTimeout;
-                options.Rewindable = false;
                 using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
                     "SELECT PercentProcessorTime FROM Win32_PerfFormattedData_PerfOS_Processor WHERE Name='_Total'"))
-                using (ManagementObjectCollection results = searcher.Get(options))
+                using (ManagementObjectCollection results = GetTimedResults(searcher))
                 {
                     foreach (ManagementObject row in results)
                     {
@@ -78,12 +75,9 @@ namespace PcCare.Diagnostics
         {
             try
             {
-                EnumerationOptions options = new EnumerationOptions();
-                options.Timeout = QueryTimeout;
-                options.Rewindable = false;
                 using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
                     "SELECT TotalVisibleMemorySize, FreePhysicalMemory FROM Win32_OperatingSystem"))
-                using (ManagementObjectCollection results = searcher.Get(options))
+                using (ManagementObjectCollection results = GetTimedResults(searcher))
                 {
                     foreach (ManagementObject row in results)
                     {
@@ -111,13 +105,10 @@ namespace PcCare.Diagnostics
         {
             try
             {
-                EnumerationOptions options = new EnumerationOptions();
-                options.Timeout = QueryTimeout;
-                options.Rewindable = false;
                 using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
                     @"root\WMI",
                     "SELECT InstanceName, CurrentTemperature FROM MSAcpi_ThermalZoneTemperature"))
-                using (ManagementObjectCollection results = searcher.Get(options))
+                using (ManagementObjectCollection results = GetTimedResults(searcher))
                 {
                     foreach (ManagementObject row in results)
                     {
@@ -144,6 +135,15 @@ namespace PcCare.Diagnostics
             {
                 // ACPI temperature providers are optional; a missing zone is not a sensor error.
             }
+        }
+
+        private static ManagementObjectCollection GetTimedResults(ManagementObjectSearcher searcher)
+        {
+            EnumerationOptions options = new EnumerationOptions();
+            options.Timeout = QueryTimeout;
+            options.Rewindable = false;
+            searcher.Options = options;
+            return searcher.Get();
         }
 
         private static int? ReadInt32(ManagementBaseObject row, string propertyName)

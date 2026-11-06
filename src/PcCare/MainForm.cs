@@ -1227,7 +1227,7 @@ namespace PcCare
             ShowPage("stress");
             CancellationToken cancellationToken = _stressCancellation.Token;
             CancellationTokenSource sensorCancellation = new CancellationTokenSource();
-            MonitorLiveSensorsAsync(sensorCancellation.Token);
+            ObserveBackgroundTask(MonitorLiveSensorsAsync(sensorCancellation.Token));
             Progress<StressTestProgress> progress = new Progress<StressTestProgress>(delegate(StressTestProgress update)
             {
                 if (!_isStressTestRunning || IsDisposed || Disposing)
@@ -1275,6 +1275,15 @@ namespace PcCare
             if (_stressStatusLabel != null && !_stressStatusLabel.IsDisposed)
                 _stressStatusLabel.Text = _stressProgressText;
             _stressCancellation.Cancel();
+        }
+
+        private static void ObserveBackgroundTask(Task task)
+        {
+            task.ContinueWith(delegate(Task completed)
+            {
+                if (completed.Exception != null)
+                    Debug.WriteLine(completed.Exception);
+            }, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
         }
 
         private async Task MonitorLiveSensorsAsync(CancellationToken cancellationToken)
