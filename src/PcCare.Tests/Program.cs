@@ -20,12 +20,16 @@ namespace PcCare.Tests
             failures += Run("healthy available data => informational result", TestHealthySnapshotHasNoWarning);
             failures += Run("cleanup removes only files older than one day", TestCleanupRemovesOnlyOldFiles);
             failures += Run("cleanup rejects a drive root", TestCleanupRejectsDriveRoot);
+            failures += Run("combined stress workload selections are validated", TestStressModeSelection);
             failures += Run("CPU stress block matches its known checksum", TestCpuStressChecksum);
+            failures += Run("FPU stress block matches its known checksum", TestFpuStressChecksum);
+            failures += Run("cache stress pattern detects changed bytes", TestCacheStressPattern);
             failures += Run("memory stress allocation is capped safely", TestMemoryStressTargetIsCapped);
             failures += Run("memory stress is disabled when free RAM is too low", TestMemoryStressRequiresHeadroom);
             failures += Run("ATA SMART attributes and temperature are parsed", TestSmartAttributesAreParsed);
             failures += Run("disk scan latency buckets use documented thresholds", TestDiskLatencyClassification);
             failures += Run("temperature probes convert deci-Kelvin and reject sentinel values", TestTemperatureConversion);
+            failures += Run("live sensor values reject unknown types and implausible readings", TestLiveSensorValueFiltering);
             failures += Run("live chart scrolls to 60 seconds and completed chart keeps full history", TestLiveChartWindow);
             failures += Run("only explicitly labelled probes count as CPU temperature", TestCpuSensorIdentification);
 
@@ -208,10 +212,40 @@ namespace PcCare.Tests
             }
         }
 
+        private static void TestStressModeSelection()
+        {
+            StressTestMode all = StressTestMode.Cpu | StressTestMode.Fpu |
+                StressTestMode.Cache | StressTestMode.Memory;
+            Assert(StressTestService.IsValidModeSelection(all),
+                "A combined selection of supported workloads should be accepted.");
+            Assert(!StressTestService.IsValidModeSelection(StressTestMode.None),
+                "An empty workload selection should be rejected.");
+            Assert(!StressTestService.IsValidModeSelection((StressTestMode)16),
+                "Unknown workload flags should be rejected.");
+        }
+
         private static void TestCpuStressChecksum()
         {
             uint actual = StressTestService.ComputeCpuCheckValue(0xA5C39E17U, 65536);
             Assert(actual == 0xD8572465U, "CPU workload must match the known verification checksum.");
+        }
+
+        private static void TestFpuStressChecksum()
+        {
+            double actual = StressTestService.ComputeFpuCheckValue(8192);
+            Assert(Math.Abs(actual - 2758.280819831906) < 0.00000001,
+                "FPU workload must match the known floating-point verification value.");
+        }
+
+        private static void TestCacheStressPattern()
+        {
+            byte[] buffer = new byte[128];
+            StressTestService.FillCacheTestPattern(buffer, 3);
+            Assert(StressTestService.CountCacheTestMismatches(buffer, 3) == 0,
+                "An intact cache working-set pattern must verify without mismatches.");
+            buffer[17] ^= 0x01;
+            Assert(StressTestService.CountCacheTestMismatches(buffer, 3) == 1,
+                "A modified byte must be reported by the cache working-set verifier.");
         }
 
         private static void TestMemoryStressTargetIsCapped()
@@ -282,6 +316,22 @@ namespace PcCare.Tests
                 "298.2 K should convert to approximately 25.05 C.");
             Assert(!LiveSensorService.TryConvertDeciKelvinToCelsius(0, out celsius),
                 "An empty/sentinel reading must remain unavailable rather than display an extreme temperature.");
+            Assert(Double.IsNaN(celsius),
+                "An unavailable sensor reading must not be replaced with a zero-degree value.");
+        }
+
+        private static void TestLiveSensorValueFiltering()
+        {
+            Assert(LiveSensorService.IsPlausibleSensorValue("Voltage", 1.2),
+                "A finite, plausible sensor value should remain available.");
+            Assert(!LiveSensorService.IsPlausibleSensorValue("Voltage", Double.NaN),
+                "NaN must be treated as an unavailable sensor value.");
+            Assert(!LiveSensorService.IsPlausibleSensorValue("Voltage", 500.0),
+                "An implausible voltage must not be displayed as a real reading.");
+            Assert(LiveSensorService.IsPlausibleSensorValue("Fan", 0.0),
+                "A zero fan speed reported by a real sensor can be a valid stopped-fan reading.");
+            Assert(!LiveSensorService.IsPlausibleSensorValue("Unknown", 10.0),
+                "An unsupported sensor type must not be assigned an assumed unit.");
         }
 
         private static void TestLiveChartWindow()

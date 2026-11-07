@@ -7,11 +7,14 @@ using System.Threading.Tasks;
 
 namespace PcCare.Diagnostics
 {
+    [Flags]
     public enum StressTestMode
     {
-        Cpu,
-        Memory,
-        CpuAndMemory
+        None = 0,
+        Cpu = 1,
+        Fpu = 2,
+        Cache = 4,
+        Memory = 8
     }
 
     public sealed class StressTestOptions
@@ -22,10 +25,15 @@ namespace PcCare.Diagnostics
 
     public sealed class StressTestProgress
     {
+        public StressTestMode Mode { get; internal set; }
         public TimeSpan Elapsed { get; internal set; }
+        public int ComputeWorkers { get; internal set; }
         public long CpuBlocksCompleted { get; internal set; }
         public long CpuErrors { get; internal set; }
-        public int CpuWorkers { get; internal set; }
+        public long FpuBlocksCompleted { get; internal set; }
+        public long FpuErrors { get; internal set; }
+        public long CachePassesCompleted { get; internal set; }
+        public long CacheErrors { get; internal set; }
         public int MemoryMegabytes { get; internal set; }
         public long MemoryPassesCompleted { get; internal set; }
         public long MemoryErrors { get; internal set; }
@@ -36,9 +44,13 @@ namespace PcCare.Diagnostics
         public StressTestMode Mode { get; internal set; }
         public TimeSpan Duration { get; internal set; }
         public bool Cancelled { get; internal set; }
-        public int CpuWorkers { get; internal set; }
+        public int ComputeWorkers { get; internal set; }
         public long CpuBlocksCompleted { get; internal set; }
         public long CpuErrors { get; internal set; }
+        public long FpuBlocksCompleted { get; internal set; }
+        public long FpuErrors { get; internal set; }
+        public long CachePassesCompleted { get; internal set; }
+        public long CacheErrors { get; internal set; }
         public int MemoryMegabytes { get; internal set; }
         public long MemoryPassesCompleted { get; internal set; }
         public long MemoryErrors { get; internal set; }
@@ -47,24 +59,32 @@ namespace PcCare.Diagnostics
 
         public bool HasErrors
         {
-            get { return CpuErrors > 0 || MemoryErrors > 0 || !String.IsNullOrWhiteSpace(ErrorMessage); }
+            get
+            {
+                return CpuErrors > 0 || FpuErrors > 0 || CacheErrors > 0 || MemoryErrors > 0 ||
+                    !String.IsNullOrWhiteSpace(ErrorMessage);
+            }
         }
     }
 
     /// <summary>
-    /// User-initiated, bounded CPU and RAM stability checks. This does not test GPU/VRAM,
-    /// power delivery or temperatures and never runs automatically.
+    /// User-initiated, bounded CPU integer/FPU/cache and RAM stability checks. This does
+    /// not test GPU/VRAM, disks, power delivery or physical memory modules in full, and
+    /// never runs automatically.
     /// </summary>
     public sealed class StressTestService
     {
         private const int CpuBlockIterations = 65536;
+        private const int FpuBlockIterations = 8192;
         private const uint CpuCheckSeed = 0xA5C39E17U;
         private const uint ExpectedCpuCheckValue = 0xD8572465U;
+        private const double ExpectedFpuCheckValue = 2758.280819831906;
+        private const int CacheWorkingSetBytes = 32 * 1024;
         private const int MemoryChunkBytes = 16 * 1024 * 1024;
         private const int MinimumMemoryTestMegabytes = 64;
         private const int MaximumMemoryTestMegabytes64Bit = 1024;
         private const int MaximumMemoryTestMegabytes32Bit = 512;
-        private const int MaximumCpuWorkers = 64;
+        private const int MaximumComputeWorkers = 64;
 
         private static readonly byte[] MemoryPatterns = { 0x00, 0xff, 0xaa, 0x55, 0xcc, 0x33, 0xf0, 0x0f };
 
@@ -73,11 +93,12 @@ namespace PcCare.Diagnostics
         {
             ValidateOptions(options);
 
-            int cpuWorkers = IncludesCpu(options.Mode)
-                ? Math.Max(1, Math.Min(Environment.ProcessorCount, MaximumCpuWorkers))
+            int computeWorkers = IncludesCompute(options.Mode)
+                ? Math.Max(1, Math.Min(Environment.ProcessorCount, MaximumComputeWorkers))
                 : 0;
             RunState state = new RunState();
-            state.CpuWorkers = cpuWorkers;
+            state.Mode = options.Mode;
+            state.ComputeWorkers = computeWorkers;
             Stopwatch stopwatch = Stopwatch.StartNew();
             List<Task> workers = new List<Task>();
 
@@ -85,13 +106,13 @@ namespace PcCare.Diagnostics
                 CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
             {
                 CancellationToken token = runCancellation.Token;
-                if (IncludesCpu(options.Mode))
+                if (IncludesCompute(options.Mode))
                 {
-                    for (int workerIndex = 0; workerIndex < cpuWorkers; workerIndex++)
+                    for (int workerIndex = 0; workerIndex < computeWorkers; workerIndex++)
                     {
                         workers.Add(StartWorker(delegate
                         {
-                            RunCpuWorker(state, token);
+                            RunComputeWorker(state, options.Mode, token);
                         }, runCancellation, state));
                     }
                 }
@@ -134,9 +155,13 @@ namespace PcCare.Diagnostics
                 Mode = options.Mode,
                 Duration = stopwatch.Elapsed,
                 Cancelled = cancellationToken.IsCancellationRequested,
-                CpuWorkers = state.CpuWorkers,
+                ComputeWorkers = state.ComputeWorkers,
                 CpuBlocksCompleted = Interlocked.Read(ref state.CpuBlocksCompleted),
                 CpuErrors = Interlocked.Read(ref state.CpuErrors),
+                FpuBlocksCompleted = Interlocked.Read(ref state.FpuBlocksCompleted),
+                FpuErrors = Interlocked.Read(ref state.FpuErrors),
+                CachePassesCompleted = Interlocked.Read(ref state.CachePassesCompleted),
+                CacheErrors = Interlocked.Read(ref state.CacheErrors),
                 MemoryMegabytes = state.MemoryMegabytes,
                 MemoryPassesCompleted = Interlocked.Read(ref state.MemoryPassesCompleted),
                 MemoryErrors = Interlocked.Read(ref state.MemoryErrors),
@@ -145,7 +170,7 @@ namespace PcCare.Diagnostics
             };
         }
 
-        /// <summary>Deterministic CPU workload block, exposed to the test runner for verification.</summary>
+        /// <summary>Deterministic CPU integer workload block, exposed for verification by tests.</summary>
         public static uint ComputeCpuCheckValue(uint seed, int iterations)
         {
             if (iterations < 0)
@@ -163,6 +188,45 @@ namespace PcCare.Diagnostics
                 }
                 return value;
             }
+        }
+
+        /// <summary>Deterministic floating-point workload block, exposed for verification by tests.</summary>
+        public static double ComputeFpuCheckValue(int iterations)
+        {
+            if (iterations < 0)
+                throw new ArgumentOutOfRangeException("iterations");
+
+            double value = 0.125;
+            for (int i = 0; i < iterations; i++)
+            {
+                double operand = (i % 97 + 1) / 97.0;
+                value += operand * operand;
+                value -= operand / (i + 2.0);
+            }
+            return value;
+        }
+
+        /// <summary>Writes a deterministic working-set pattern for cache-check tests.</summary>
+        public static void FillCacheTestPattern(byte[] buffer, int pass)
+        {
+            if (buffer == null)
+                throw new ArgumentNullException("buffer");
+            for (int i = 0; i < buffer.Length; i++)
+                buffer[i] = ExpectedCacheByte(i, pass);
+        }
+
+        /// <summary>Counts changed bytes in a cache-test working set.</summary>
+        public static long CountCacheTestMismatches(byte[] buffer, int pass)
+        {
+            if (buffer == null)
+                throw new ArgumentNullException("buffer");
+            long mismatches = 0;
+            for (int i = 0; i < buffer.Length; i++)
+            {
+                if (buffer[i] != ExpectedCacheByte(i, pass))
+                    mismatches++;
+            }
+            return mismatches;
         }
 
         /// <summary>
@@ -184,24 +248,37 @@ namespace PcCare.Diagnostics
             return targetMegabytes < MinimumMemoryTestMegabytes ? 0 : (int)targetMegabytes;
         }
 
+        public static bool IsValidModeSelection(StressTestMode mode)
+        {
+            const StressTestMode supportedModes = StressTestMode.Cpu | StressTestMode.Fpu |
+                StressTestMode.Cache | StressTestMode.Memory;
+            int unknownFlags = (int)mode & ~(int)supportedModes;
+            return mode != StressTestMode.None && unknownFlags == 0;
+        }
+
         private static void ValidateOptions(StressTestOptions options)
         {
             if (options == null)
                 throw new ArgumentNullException("options");
-            if (!Enum.IsDefined(typeof(StressTestMode), options.Mode))
-                throw new ArgumentOutOfRangeException("options.Mode");
+            if (!IsValidModeSelection(options.Mode))
+                throw new ArgumentOutOfRangeException("options.Mode", "Выберите хотя бы один поддерживаемый компонент теста.");
             if (options.Duration < TimeSpan.FromMinutes(1) || options.Duration > TimeSpan.FromMinutes(15))
                 throw new ArgumentOutOfRangeException("options.Duration", "Продолжительность теста должна быть от 1 до 15 минут.");
         }
 
-        private static bool IncludesCpu(StressTestMode mode)
+        private static bool IncludesCompute(StressTestMode mode)
         {
-            return mode == StressTestMode.Cpu || mode == StressTestMode.CpuAndMemory;
+            return (mode & (StressTestMode.Cpu | StressTestMode.Fpu | StressTestMode.Cache)) != 0;
         }
 
         private static bool IncludesMemory(StressTestMode mode)
         {
-            return mode == StressTestMode.Memory || mode == StressTestMode.CpuAndMemory;
+            return (mode & StressTestMode.Memory) != 0;
+        }
+
+        private static bool Includes(StressTestMode mode, StressTestMode workload)
+        {
+            return (mode & workload) != 0;
         }
 
         private static Task StartWorker(Action work, CancellationTokenSource cancellation, RunState state)
@@ -225,14 +302,71 @@ namespace PcCare.Diagnostics
             }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         }
 
-        private static void RunCpuWorker(RunState state, CancellationToken cancellationToken)
+        private static void RunComputeWorker(RunState state, StressTestMode mode,
+            CancellationToken cancellationToken)
         {
+            byte[] cacheBuffer = Includes(mode, StressTestMode.Cache)
+                ? new byte[CacheWorkingSetBytes] : null;
+            int cachePass = 0;
+
             while (!cancellationToken.IsCancellationRequested)
             {
-                uint value = ComputeCpuCheckValue(CpuCheckSeed, CpuBlockIterations);
-                if (value != ExpectedCpuCheckValue)
-                    Interlocked.Increment(ref state.CpuErrors);
-                Interlocked.Increment(ref state.CpuBlocksCompleted);
+                if (Includes(mode, StressTestMode.Cpu))
+                {
+                    uint value = ComputeCpuCheckValue(CpuCheckSeed, CpuBlockIterations);
+                    if (value != ExpectedCpuCheckValue)
+                        Interlocked.Increment(ref state.CpuErrors);
+                    Interlocked.Increment(ref state.CpuBlocksCompleted);
+                }
+
+                if (Includes(mode, StressTestMode.Fpu))
+                {
+                    double value = ComputeFpuCheckValue(FpuBlockIterations);
+                    if (Double.IsNaN(value) || Double.IsInfinity(value) ||
+                        Math.Abs(value - ExpectedFpuCheckValue) > 0.00000001)
+                        Interlocked.Increment(ref state.FpuErrors);
+                    Interlocked.Increment(ref state.FpuBlocksCompleted);
+                }
+
+                if (cacheBuffer != null)
+                {
+                    if (!RunCachePass(cacheBuffer, cachePass, state, cancellationToken))
+                        return;
+                    cachePass++;
+                }
+            }
+        }
+
+        private static bool RunCachePass(byte[] buffer, int pass, RunState state,
+            CancellationToken cancellationToken)
+        {
+            for (int offset = 0; offset < buffer.Length; offset++)
+            {
+                if ((offset & 0x3ff) == 0 && cancellationToken.IsCancellationRequested)
+                    return false;
+                buffer[offset] = ExpectedCacheByte(offset, pass);
+            }
+
+            long mismatches = 0;
+            for (int offset = 0; offset < buffer.Length; offset++)
+            {
+                if ((offset & 0x3ff) == 0 && cancellationToken.IsCancellationRequested)
+                    return false;
+                if (buffer[offset] != ExpectedCacheByte(offset, pass))
+                    mismatches++;
+            }
+
+            if (mismatches > 0)
+                Interlocked.Add(ref state.CacheErrors, mismatches);
+            Interlocked.Increment(ref state.CachePassesCompleted);
+            return true;
+        }
+
+        private static byte ExpectedCacheByte(int offset, int pass)
+        {
+            unchecked
+            {
+                return (byte)(offset * 31 + pass * 17 + (offset >> 8));
             }
         }
 
@@ -343,10 +477,15 @@ namespace PcCare.Diagnostics
         {
             return new StressTestProgress
             {
+                Mode = state.Mode,
                 Elapsed = stopwatch.Elapsed,
+                ComputeWorkers = state.ComputeWorkers,
                 CpuBlocksCompleted = Interlocked.Read(ref state.CpuBlocksCompleted),
                 CpuErrors = Interlocked.Read(ref state.CpuErrors),
-                CpuWorkers = state.CpuWorkers,
+                FpuBlocksCompleted = Interlocked.Read(ref state.FpuBlocksCompleted),
+                FpuErrors = Interlocked.Read(ref state.FpuErrors),
+                CachePassesCompleted = Interlocked.Read(ref state.CachePassesCompleted),
+                CacheErrors = Interlocked.Read(ref state.CacheErrors),
                 MemoryMegabytes = state.MemoryMegabytes,
                 MemoryPassesCompleted = Interlocked.Read(ref state.MemoryPassesCompleted),
                 MemoryErrors = Interlocked.Read(ref state.MemoryErrors)
@@ -383,10 +522,15 @@ namespace PcCare.Diagnostics
         private sealed class RunState
         {
             public readonly object SyncRoot = new object();
-            public int CpuWorkers;
+            public StressTestMode Mode;
+            public int ComputeWorkers;
             public int MemoryMegabytes;
             public long CpuBlocksCompleted;
             public long CpuErrors;
+            public long FpuBlocksCompleted;
+            public long FpuErrors;
+            public long CachePassesCompleted;
+            public long CacheErrors;
             public long MemoryPassesCompleted;
             public long MemoryErrors;
             public string FirstMemoryError;
